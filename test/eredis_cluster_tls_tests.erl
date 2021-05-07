@@ -1,6 +1,7 @@
 -module(eredis_cluster_tls_tests).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("eredis_cluster/include/eredis_cluster.hrl").
 
 connect_test() ->
     application:set_env(eredis_cluster, init_nodes, []),
@@ -62,9 +63,9 @@ options_changed_test() ->
                                               {certfile,   filename:join([Dir, "faulty.crt"])},
                                               {keyfile,    filename:join([Dir, "faulty.key"])}]),
 
-    State = eredis_cluster_monitor:get_state(),
+    State = eredis_cluster_monitor:get_state(?default_cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
-    eredis_cluster_monitor:refresh_mapping(Version),
+    eredis_cluster_monitor:refresh_mapping(?default_cluster, Version),
 
     %% Change back
     Dir = filename:join([code:priv_dir(eredis_cluster), "configs", "tls"]),
@@ -72,9 +73,9 @@ options_changed_test() ->
                                               {certfile,   filename:join([Dir, "client.crt"])},
                                               {keyfile,    filename:join([Dir, "client.key"])}]),
 
-    State = eredis_cluster_monitor:get_state(),
+    State = eredis_cluster_monitor:get_state(?default_cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
-    eredis_cluster_monitor:refresh_mapping(Version),
+    eredis_cluster_monitor:refresh_mapping(?default_cluster, Version),
 
     ?assertEqual({ok, <<"value">>}, eredis_cluster:q(["GET", Key])),
 

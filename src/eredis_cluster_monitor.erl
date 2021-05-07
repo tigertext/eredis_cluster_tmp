@@ -9,15 +9,15 @@
 -behaviour(gen_server).
 
 %% Internal API.
--export([start_link/0]).
--export([connect/2, disconnect/1]).
--export([refresh_mapping/1, async_refresh_mapping/1]).
--export([get_state/0, get_state_version/1]).
+-export([start_link/1]).
+-export([connect/3, disconnect/2]).
+-export([refresh_mapping/2, async_refresh_mapping/2]).
+-export([get_state/1, get_state_version/1]).
 -export([get_pool_by_slot/1, get_pool_by_slot/2]).
--export([get_all_pools/1]).
+-export([get_all_pools/0, get_all_pools/1]).
+-export([get_cluster_slots/1, get_cluster_nodes/1]).
 
-%% Public API.
--export([get_all_pools/0]).
+%% Public API (backward compat).
 -export([get_cluster_slots/0, get_cluster_nodes/0]).
 
 %% gen_server.
@@ -35,37 +35,40 @@
     init_nodes   = [] :: [#node{}],
     slots_maps   = {} :: tuple(), %% whose elements are #slots_map{}
     node_options = [] :: options(),
-    version      = 0  :: integer()
+    version      = 0  :: integer(),
+    slots_table       :: ets:tid() | undefined,
+    pool_sup          :: pid() | undefined
 }).
 
--define(SLOTS, eredis_cluster_monitor_slots).
+-define(cluster_state_table(Cluster), Cluster).
+-define(cluster_process(Cluster), Cluster).
 
 %% API.
 %% @private
--spec start_link() -> {ok, pid()}.
-start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+-spec start_link(Cluster :: atom()) -> {ok, pid()}.
+start_link(Cluster) ->
+    gen_server:start_link({local, Cluster}, ?MODULE, Cluster, []).
 
 %% @private
-connect(InitServers, Options) ->
-    gen_server:call(?MODULE, {connect, InitServers, Options}).
+connect(Cluster, InitServers, Options) ->
+    gen_server:call(?cluster_process(Cluster), {connect, InitServers, Options}).
 
 %% @private
-disconnect(PoolNodes) ->
-    gen_server:call(?MODULE, {disconnect, PoolNodes}).
+disconnect(Cluster, PoolNodes) ->
+    gen_server:call(?cluster_process(Cluster), {disconnect, PoolNodes}).
 
 %% @private
-refresh_mapping(Version) ->
-    gen_server:call(?MODULE, {reload_slots_map, Version}).
+refresh_mapping(Cluster, Version) ->
+    gen_server:call(?cluster_process(Cluster), {reload_slots_map, Version}).
 
 %% @private
-async_refresh_mapping(Version) ->
-    gen_server:cast(?MODULE, {reload_slots_map, Version}).
+async_refresh_mapping(Cluster, Version) ->
+    gen_server:cast(?cluster_process(Cluster), {reload_slots_map, Version}).
 
 %% @private
--spec get_state() -> #state{}.
-get_state() ->
-    case ets:lookup(?MODULE, cluster_state) of
+-spec get_state(Cluster :: atom()) -> #state{}.
+get_state(Cluster) ->
+    case ets:lookup(?cluster_state_table(Cluster), cluster_state) of
         [{cluster_state, State}] ->
             State;
         [] ->
@@ -79,12 +82,14 @@ get_state_version(State) ->
 %% @private
 -spec get_all_pools() -> [atom()].
 get_all_pools() ->
-    get_all_pools(get_state()).
+    get_all_pools(?default_cluster).
 
 %% @private
--spec get_all_pools(State :: #state{}) -> [atom()].
-get_all_pools(State) ->
-    SlotsMapList = tuple_to_list(State#state.slots_maps),
+-spec get_all_pools(atom() | #state{}) -> [atom()].
+get_all_pools(Cluster) when is_atom(Cluster) ->
+    get_all_pools(get_state(Cluster));
+get_all_pools(#state{slots_maps = SlotsMaps}) ->
+    SlotsMapList = tuple_to_list(SlotsMaps),
     lists:usort([SlotsMap#slots_map.node#node.pool || SlotsMap <- SlotsMapList,
                     SlotsMap#slots_map.node =/= undefined]).
 
@@ -96,20 +101,19 @@ get_all_pools(State) ->
 -spec get_pool_by_slot(Slot :: integer()) ->
     {PoolName :: atom() | undefined, Version :: integer()}.
 get_pool_by_slot(Slot) ->
-    State = get_state(),
+    State = get_state(?default_cluster),
     get_pool_by_slot(Slot, State).
 
 %% @private
-%% Supply a state to prevent an extra ets lookup
 -spec get_pool_by_slot(Slot :: integer(), State :: #state{}) ->
     {PoolName :: atom() | undefined, Version :: integer()}.
 get_pool_by_slot(Slot, State) ->
     try
-        [{_, Index}] = ets:lookup(?SLOTS, Slot),
-        Cluster = element(Index, State#state.slots_maps),
+        [{_, Index}] = ets:lookup(State#state.slots_table, Slot),
+        SlotsMap = element(Index, State#state.slots_maps),
         if
-            Cluster#slots_map.node =/= undefined ->
-                {Cluster#slots_map.node#node.pool, State#state.version};
+            SlotsMap#slots_map.node =/= undefined ->
+                {SlotsMap#slots_map.node#node.pool, State#state.version};
             true ->
                 {undefined, State#state.version}
         end
@@ -140,17 +144,20 @@ reload_slots_map(State) ->
 
     %% Disconnect non-used nodes
     RemovedFromOldMap = remove_list_elements(OldSlotsMaps, CommonInOldMap),
-    [close_connection(SlotsMap) || SlotsMap <- RemovedFromOldMap],
+    PoolSup = State#state.pool_sup,
+    [close_connection(PoolSup, SlotsMap) || SlotsMap <- RemovedFromOldMap],
 
     %% Connect to new nodes
-    ConnectedSlotsMaps = connect_all_slots(NewSlotsMaps),
-    create_slots_cache(ConnectedSlotsMaps),
+    ConnectedSlotsMaps = connect_all_slots(State#state.pool_sup, NewSlotsMaps),
+    create_slots_cache(State#state.slots_table, ConnectedSlotsMaps),
     NewState = State#state{
         slots_maps = list_to_tuple(ConnectedSlotsMaps),
         version = State#state.version + 1
     },
 
-    true = ets:insert(?MODULE, [{cluster_state, NewState}]),
+    Cluster = this_cluster(),
+    true = ets:insert(?cluster_state_table(Cluster),
+                      [{cluster_state, NewState}]),
 
     NewState.
 
@@ -170,7 +177,12 @@ remove_list_elements(Xs, Ys) ->
 %% =============================================================================
 -spec get_cluster_slots() -> [[bitstring() | [bitstring()]]].
 get_cluster_slots() ->
-    State = get_state(),
+    get_cluster_slots(?default_cluster).
+
+%% @private
+-spec get_cluster_slots(Cluster :: atom()) -> [[bitstring() | [bitstring()]]].
+get_cluster_slots(Cluster) ->
+    State = get_state(Cluster),
     Options = get_current_options(State),
     get_cluster_slots(State, Options).
 
@@ -192,7 +204,11 @@ get_cluster_slots(State, Options) ->
 %% =============================================================================
 -spec get_cluster_nodes() -> [[bitstring()]].
 get_cluster_nodes() ->
-    State = get_state(),
+    get_cluster_nodes(?default_cluster).
+
+-spec get_cluster_nodes(Cluster :: atom()) -> [[bitstring()]].
+get_cluster_nodes(Cluster) ->
+    State = get_state(Cluster),
     Options = get_current_options(State),
     get_cluster_nodes(State, Options).
 
@@ -363,29 +379,30 @@ get_current_options(State) ->
     lists:ukeysort(1, State#state.node_options ++ Env).
 
 %%%------------------------------------------------------------
--spec close_connection_with_nodes(SlotsMaps::[#slots_map{}],
-                                  Pools::[atom()]) -> [#slots_map{}].
+-spec close_connection_with_nodes(PoolSup :: pid(),
+                                  SlotsMaps :: [#slots_map{}],
+                                  Pools :: [atom()]) -> [#slots_map{}].
 %%%
 %%% Close the connection related to specified Pool node.
 %%%------------------------------------------------------------
-close_connection_with_nodes(SlotsMaps, Pools) ->
+close_connection_with_nodes(PoolSup, SlotsMaps, Pools) ->
     lists:foldl(fun(Map, AccMap) ->
                         case lists:member(Map#slots_map.node#node.pool,
                                           Pools) of
                             true ->
-                                close_connection(Map),
+                                close_connection(PoolSup, Map),
                                 AccMap;
                             false ->
                                 [Map|AccMap]
                         end
                 end, [], SlotsMaps).
 
--spec close_connection(#slots_map{}) -> ok.
-close_connection(SlotsMap) ->
+-spec close_connection(pid(), #slots_map{}) -> ok.
+close_connection(PoolSup, SlotsMap) ->
     Node = SlotsMap#slots_map.node,
     if
         Node =/= undefined ->
-            try eredis_cluster_pool:stop(Node#node.pool) of
+            try eredis_cluster_pool:stop(PoolSup, Node#node.pool) of
                 _ ->
                     ok
             catch
@@ -396,9 +413,10 @@ close_connection(SlotsMap) ->
             ok
     end.
 
--spec connect_node(#node{}) -> #node{} | undefined.
-connect_node(Node) ->
-    case eredis_cluster_pool:create(Node#node.address,
+-spec connect_node(pid(), #node{}) -> #node{} | undefined.
+connect_node(PoolSup, Node) ->
+    case eredis_cluster_pool:create(PoolSup,
+                                    Node#node.address,
                                     Node#node.port,
                                     Node#node.options) of
         {ok, Pool} ->
@@ -413,18 +431,19 @@ safe_eredis_start_link(Address, Port, Options) ->
     process_flag(trap_exit, false),
     Result.
 
--spec create_slots_cache([#slots_map{}]) -> true.
-create_slots_cache(SlotsMaps) ->
+-spec create_slots_cache(ets:tid(), [#slots_map{}]) -> true.
+create_slots_cache(SlotsTable, SlotsMaps) ->
   SlotsCache = [[{Index, SlotsMap#slots_map.index}
         || Index <- lists:seq(SlotsMap#slots_map.start_slot,
             SlotsMap#slots_map.end_slot)]
         || SlotsMap <- SlotsMaps],
   SlotsCacheF = lists:flatten(SlotsCache),
-  ets:insert(?SLOTS, SlotsCacheF).
+  ets:insert(SlotsTable, SlotsCacheF).
 
--spec connect_all_slots([#slots_map{}]) -> [#slots_map{}].
-connect_all_slots(SlotsMapList) ->
-    [SlotsMap#slots_map{node=connect_node(SlotsMap#slots_map.node)} ||
+-spec connect_all_slots(pid(), [#slots_map{}]) -> [#slots_map{}].
+connect_all_slots(PoolSup, SlotsMapList) ->
+    [SlotsMap#slots_map{node = connect_node(PoolSup,
+                                            SlotsMap#slots_map.node)} ||
         SlotsMap <- SlotsMapList].
 
 -spec connect_([{Address :: string(), Port :: integer()}],
@@ -444,27 +463,35 @@ disconnect_([], State) ->
     State;
 disconnect_(PoolNodes, State) ->
     SlotsMaps = tuple_to_list(State#state.slots_maps),
+    PoolSup = State#state.pool_sup,
+    Cluster = this_cluster(),
 
-    NewSlotsMaps = close_connection_with_nodes(SlotsMaps, PoolNodes),
-
-    ConnectedSlotsMaps = connect_all_slots(NewSlotsMaps),
-    create_slots_cache(ConnectedSlotsMaps),
+    NewSlotsMaps = close_connection_with_nodes(PoolSup, SlotsMaps, PoolNodes),
+    ConnectedSlotsMaps = connect_all_slots(PoolSup, NewSlotsMaps),
+    create_slots_cache(State#state.slots_table, ConnectedSlotsMaps),
 
     NewState = State#state{
                  slots_maps = list_to_tuple(ConnectedSlotsMaps),
                  version = State#state.version + 1
                 },
-    true = ets:insert(?MODULE, [{cluster_state, NewState}]),
+    true = ets:insert(?cluster_state_table(Cluster),
+                      [{cluster_state, NewState}]),
     NewState.
+
+%% Returns the name of the cluster handled by the current monitor process
+this_cluster() ->
+    {registered_name, Name} = process_info(self(), registered_name),
+    true = is_atom(Name),
+    Name.
 
 %% gen_server.
 
 %% @private
-init(_Args) ->
-    ets:new(?MODULE, [protected, set, named_table, {read_concurrency, true}]),
-    ets:new(?SLOTS, [protected, set, named_table, {read_concurrency, true}]),
-    InitNodes = application:get_env(eredis_cluster, init_nodes, []),
-    {ok, connect_(InitNodes, [], #state{})}. %% get_env options read later in callstack
+init(Cluster) ->
+    ets:new(Cluster, [protected, set, named_table, {read_concurrency, true}]),
+    SlotsTab = ets:new(slots, [protected, set, {read_concurrency, true}]),
+    gen_server:cast(self(), {async_init, Cluster}),
+    {ok, #state{slots_table = SlotsTab}}.
 
 %% @private
 handle_call({reload_slots_map, Version}, _From, #state{version=Version} = State) ->
@@ -480,12 +507,21 @@ handle_call(_Request, _From, State) ->
     {reply, ignored, State}.
 
 %% @private
+handle_cast({async_init, Cluster}, State) ->
+    {ok, ClusterSup} = eredis_cluster_sup_sup:lookup_cluster(Cluster),
+    PoolSup = eredis_cluster_sup:get_pool_sup(ClusterSup),
+    InitNodes = case Cluster of
+                    ?default_cluster ->
+                        application:get_env(eredis_cluster, init_nodes, []);
+                    _Other  ->
+                        []
+                end,
+
+    %% application env options are read later in callstack
+    {noreply, connect_(InitNodes, [], State#state{pool_sup = PoolSup})};
 handle_cast({reload_slots_map, Version}, #state{version = Version} = State) ->
     {noreply, reload_slots_map(State)};
 handle_cast({reload_slots_map, _OldVersion}, State) ->
-    %% Mismatching version. Slots map already reloaded.
-    {noreply, State};
-handle_cast(_Msg, State) ->
     {noreply, State}.
 
 %% @private

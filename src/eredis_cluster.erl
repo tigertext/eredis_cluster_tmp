@@ -7,6 +7,9 @@
 %% manual, the words "pool" and "node" are used interchangeably when referring
 %% to the connection pool to a particular Redis node.
 %%
+%% Some functions accept a Cluster parameter. For those which don't, they
+%% operate on a default cluster. If you only need to connect to one cluster,
+%% there is no need to use the functions with an explicit Cluster parameter.
 -module(eredis_cluster).
 -behaviour(application).
 
@@ -16,23 +19,30 @@
 -export([start/2, stop/1]).
 
 %% Management
--export([connect/1, connect/2, disconnect/1]).
+-export([connect/1, connect/2, connect/3, disconnect/1]).
 
-%% Generic redis call
+%% Generic redis call (default cluster)
 -export([q/1, qk/2, q_noreply/1, qp/1, qa/1, qa2/1, qn/2, qw/2, qmn/1]).
 -export([transaction/1, transaction/2]).
 
-%% Specific redis command implementation
+%% Commands to named cluster
+-export([q/2, qk/3, qa/2, qa2/2, qmn/2]).
+-export([transaction/3]).
+
+%% Specific redis command implementation (default cluster)
 -export([flushdb/0, load_script/1, scan/4]).
 -export([eval/4]).
 
-%% Convenience functions
+%% Convenience functions (default cluster)
 -export([update_key/2]).
 -export([update_hash_field/3]).
 -export([optimistic_locking_transaction/3]).
 
-%% Specific pools (specific Redis nodes)
+%% Specific pools (Redis nodes), default cluster
 -export([get_pool_by_command/1, get_pool_by_key/1, get_all_pools/0]).
+
+%% Specific pools (Redis nodes), named cluster
+-export([get_pool_by_command/2, get_pool_by_key/2, get_all_pools/1]).
 
 -ifdef(TEST).
 -export([get_key_slot/1]).
@@ -66,7 +76,12 @@ stop() ->
 -spec start(StartType::application:start_type(), StartArgs::term()) ->
     {ok, pid()}.
 start(_Type, _Args) ->
-    eredis_cluster_sup:start_link().
+    SupSupResult = eredis_cluster_sup_sup:start_link(),
+    case application:get_env(eredis_cluster, init_nodes, []) of
+        []        -> ok;
+        InitNodes -> connect(InitNodes)
+    end,
+    SupSupResult.
 
 %% @private
 %% @doc Application behaviour callback
@@ -88,7 +103,7 @@ stop(_State) ->
               when InitServers :: [{Address :: string(),
                                     Port :: inet:port_number()}].
 connect(InitServers) ->
-    connect(InitServers, []).
+    connect(?default_cluster, InitServers, []).
 
 %% =============================================================================
 %% @doc Connects to a Redis cluster using a set of init nodes, with options.
@@ -102,18 +117,49 @@ connect(InitServers) ->
                                     Port :: inet:port_number()}],
                    Options :: options().
 connect(InitServers, Options) ->
-    eredis_cluster_monitor:connect(InitServers, Options).
+    connect(?default_cluster, InitServers, Options).
 
 %% =============================================================================
-%% @doc Disconnects a set of nodes.
+%% @doc Connects to a Redis cluster using a set of init nodes, with options and
+%% cluster name.
+%%
+%% Failes with error badarg if the cluster name is already in use as a
+%% registered name of some other process.
+%% @end
+%% =============================================================================
+-spec connect(Cluster, InitServers, Options) -> ok
+              when Cluster :: atom(),
+                   InitServers :: [{Address :: string(),
+                                    Port :: inet:port_number()}],
+                   Options :: options().
+connect(Cluster, InitServers, Options) ->
+    case whereis(Cluster) of
+        undefined ->
+            eredis_cluster_sup_sup:add_cluster(Cluster);
+        Pid when is_pid(Pid) ->
+            %% Name already in used. Is it a cluster?
+            case eredis_cluster_sup_sup:lookup_cluster(Cluster) of
+                {ok, _} ->
+                    ok;
+                {error, not_found} ->
+                    %% The name is a registered name of some other process.
+                    error(badarg) % Same error as for register/2.
+            end
+    end,
+    eredis_cluster_monitor:connect(Cluster, InitServers, Options).
+
+%% =============================================================================
+%% @doc Disconnects a cluster by name or a set of nodes in the default cluster.
 %%
 %% Note: Unused nodes are disconnected automatically when the slot mapping is
 %% updated.
 %% @end
 %% =============================================================================
--spec disconnect(Nodes :: [atom()]) -> ok.
-disconnect(Nodes) ->
-    eredis_cluster_monitor:disconnect(Nodes).
+-spec disconnect((Nodes :: [atom()]) | (Cluster :: atom())) -> ok.
+disconnect(Nodes) when is_list(Nodes) ->
+    eredis_cluster_monitor:disconnect(?default_cluster, Nodes);
+disconnect(Cluster) when is_atom(Cluster) ->
+    eredis_cluster_sup_sup:remove_cluster(Cluster).
 
 %% =============================================================================
 %% @doc This function executes simple or pipelined command on a single redis
@@ -122,13 +168,25 @@ disconnect(Nodes) ->
 %% =============================================================================
 -spec q(Command::redis_command()) -> redis_result().
 q(Command) ->
-    query(Command).
+    query(?default_cluster, Command).
+
+%% @doc Simple or pipelined command on a named cluster.
+-spec q(Cluster :: atom(), Command :: redis_command()) -> redis_result().
+q(Cluster, Command) ->
+    query(Cluster, Command).
 
 %% @doc Executes a simple or pipeline of command on the Redis node where the
-%% provided key resides.
+%% provided key resides on the default cluster.
 -spec qk(Command::redis_command(), Key::anystring()) -> redis_result().
 qk(Command, Key) ->
-    query(Command, Key).
+    query(?default_cluster, Command, Key).
+
+%% @doc Executes a simple or pipeline of command on the Redis node where the
+%% provided key resides on a named cluster.
+-spec qk(Cluster :: atom(), Command :: redis_command(), Key :: anystring()) ->
+          redis_result().
+qk(Cluster, Command, Key) ->
+    query(Cluster, Command, Key).
 
 %% =============================================================================
 %% @doc Executes a simple or pipeline of commands on a single Redis node, but
@@ -140,7 +198,7 @@ qk(Command, Key) ->
 -spec q_noreply(Command::redis_command()) -> ok.
 q_noreply(Command) ->
     PoolKey = get_key_from_command(Command),
-    query_noreply(Command, PoolKey).
+    query_noreply(?default_cluster, Command, PoolKey).
 
 %% =============================================================================
 %% @doc Executes a pipeline of commands.
@@ -152,39 +210,45 @@ q_noreply(Command) ->
 -spec qp(Commands::redis_pipeline_command()) -> redis_pipeline_result().
 qp(Commands) -> q(Commands).
 
-%% =============================================================================
-%% @doc Performs a query on all nodes in the cluster. When a query to a master
-%% fails, the mapping is refreshed and the query is retried.
-%% @end
-%% =============================================================================
+%% @doc Performs a query on all nodes in the default cluster. When a query to a
+%% master fails, the mapping is refreshed and the query is retried.
 -spec qa(Command) -> Result
               when Command :: redis_command(),
                    Result  :: [redis_transaction_result()] |
                               {error, no_connection}.
-qa(Command) -> qa(Command, 0, []).
+qa(Command) -> qa(?default_cluster, Command, 0, []).
 
-qa(_, ?REDIS_CLUSTER_REQUEST_TTL, Res) ->
+%% @doc Performs a query on all nodes in a cluster. When a query to a master
+%% fails, the mapping is refreshed and the query is retried.
+-spec qa(Cluster, Command) -> Result
+              when Cluster :: atom(),
+                   Command :: redis_command(),
+                   Result  :: [redis_transaction_result()] |
+                              {error, no_connection}.
+qa(Cluster, Command) -> qa(Cluster, Command, 0, []).
+
+qa(_Cluster, _Command, ?redis_cluster_request_max_retries, Res) ->
     case Res of
         [] -> {error, no_connection};
         _  -> Res
     end;
-qa(Command, Counter, Res) ->
+qa(Cluster, Command, Counter, Res) ->
     throttle_retries(Counter),
 
-    State = eredis_cluster_monitor:get_state(),
+    State = eredis_cluster_monitor:get_state(Cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
     Pools = eredis_cluster_monitor:get_all_pools(State),
     case Pools of
         [] ->
-            eredis_cluster_monitor:refresh_mapping(Version),
-            qa(Command, Counter + 1, Res);
+            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
+            qa(Cluster, Command, Counter + 1, Res);
         _ ->
             Transaction = fun(Worker) -> qw(Worker, Command) end,
             Results = [eredis_cluster_pool:transaction(Pool, Transaction) ||
                          Pool <- Pools],
-            case handle_transaction_result(Results, Version)
+            case handle_transaction_result(Results, Cluster, Version)
             of
-                retry  -> qa(Command, Counter + 1, Results);
+                retry  -> qa(Cluster, Command, Counter + 1, Results);
                 Result -> Result
             end
     end.
@@ -199,30 +263,38 @@ qa(Command, Counter, Res) ->
               when Command :: redis_command(),
                    Result  :: [{Node :: atom(), redis_result()}] |
                               {error, no_connection}.
-qa2(Command) -> qa2(Command, 0, []).
+qa2(Command) -> qa2(?default_cluster, Command, 0, []).
 
-qa2(_, ?REDIS_CLUSTER_REQUEST_TTL, Res) ->
+%% @doc Like qa2/1 but for a named cluster rather than the default cluster.
+-spec qa2(Cluster, Command) -> Result
+              when Cluster :: atom(),
+                   Command :: redis_command(),
+                   Result  :: [{Node :: atom(), redis_result()}] |
+                              {error, no_connection}.
+qa2(Cluster, Command) -> qa2(Cluster, Command, 0, []).
+
+qa2(_Cluster, _Command, ?redis_cluster_request_max_retries, Res) ->
     case Res of
         [] -> {error, no_connection};
         _  -> Res
     end;
-qa2(Command, Counter, Res) ->
+qa2(Cluster, Command, Counter, Res) ->
     throttle_retries(Counter),
 
-    State = eredis_cluster_monitor:get_state(),
+    State = eredis_cluster_monitor:get_state(Cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
     Pools = eredis_cluster_monitor:get_all_pools(State),
     case Pools of
         [] ->
-            eredis_cluster_monitor:refresh_mapping(Version),
-            qa2(Command, Counter + 1, Res);
+            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
+            qa2(Cluster, Command, Counter + 1, Res);
         _ ->
             Transaction = fun(Worker) -> qw(Worker, Command) end,
             Result = [{Pool, eredis_cluster_pool:transaction(Pool, Transaction)} ||
                          Pool <- Pools],
             Tmp = lists:foldl(
                     fun({_P, TR}, Acc) ->
-                            case handle_transaction_result(TR, Version)
+                            case handle_transaction_result(TR, Cluster, Version)
                             of
                                 retry -> [retry|Acc];
                                 _     -> Acc
@@ -230,7 +302,7 @@ qa2(Command, Counter, Res) ->
                     end, [], Result),
             case lists:member(retry, Tmp) of
                 true ->
-                    qa2(Command, Counter + 1, Result);
+                    qa2(Cluster, Command, Counter + 1, Result);
                 false ->
                     Result
             end
@@ -277,6 +349,9 @@ qw_noreply(Connection, Command) ->
 %%
 %% `transaction(Commands)' is equivalent to calling `q([["MULTI"]] ++ Commands
 %% ++ [["EXEC"]])' and taking the last element in the resulting list.
+%%
+%% @deprecated This function can be confused with {@link transaction/2} which
+%% works in a very different way. Please use {@link q/1} instead.
 %% @end
 %% =============================================================================
 -spec transaction(Commands::redis_pipeline_command()) -> redis_transaction_result().
@@ -296,31 +371,37 @@ transaction(Commands) ->
 %% @end
 %% =============================================================================
 -spec qmn(Commands::redis_pipeline_command()) -> redis_pipeline_result().
-qmn(Commands) -> qmn(Commands, 0).
+qmn(Commands) -> qmn(?default_cluster, Commands, 0).
 
-qmn(_, ?REDIS_CLUSTER_REQUEST_TTL) ->
+%% @doc Like qmn/1, but for a named cluster rather than the default cluster.
+-spec qmn(Cluster :: atom(), Commands :: redis_pipeline_command()) ->
+          redis_pipeline_result().
+qmn(Cluster, Commands) -> qmn(Cluster, Commands, 0).
+
+qmn(_Cluster, _Commands, ?redis_cluster_request_max_retries) ->
     {error, no_connection};
-qmn(Commands, Counter) ->
+qmn(Cluster, Commands, Counter) ->
     throttle_retries(Counter),
 
     %% TODO: Implement ASK redirects for qmn.
 
-    {CommandsByPools, MappingInfo, Version} = split_by_pools(Commands),
-    case qmn2(CommandsByPools, MappingInfo, [], Version) of
-        retry -> qmn(Commands, Counter + 1);
+    {CommandsByPools, MappingInfo, Version} = split_by_pools(Cluster, Commands),
+    case qmn2(Cluster, CommandsByPools, MappingInfo, [], Version) of
+        retry -> qmn(Cluster, Commands, Counter + 1);
         Res -> Res
     end.
 
-qmn2([{Pool, PoolCommands} | T1], [{Pool, Mapping} | T2], Acc, Version) ->
+qmn2(Cluster, [{Pool, PoolCommands} | T1], [{Pool, Mapping} | T2], Acc,
+     Version) ->
     Transaction = fun(Worker) -> qw(Worker, PoolCommands) end,
     Result = eredis_cluster_pool:transaction(Pool, Transaction),
-    case handle_transaction_result(Result, Version) of
+    case handle_transaction_result(Result, Cluster, Version) of
         retry -> retry;
         Res ->
             MappedRes = lists:zip(Mapping, Res),
-            qmn2(T1, T2, MappedRes ++ Acc, Version)
+            qmn2(Cluster, T1, T2, MappedRes ++ Acc, Version)
     end;
-qmn2([], [], Acc, _) ->
+qmn2(_Cluster, [], [], Acc, _Version) ->
     SortedAcc =
         lists:sort(
             fun({Index1, _}, {Index2, _}) ->
@@ -329,9 +410,11 @@ qmn2([], [], Acc, _) ->
     [Res || {_, Res} <- SortedAcc].
 
 %% =============================================================================
-%% @doc Execute a function on a single connection. This should be used when a
-%% transaction command such as WATCH or DISCARD must be used. The node is
-%% selected by giving a key that this node is containing. Note that this
+%% @doc Execute a function on a single connection in the default cluster.
+%%
+%% This should be used when a transaction command such
+%% as WATCH or DISCARD must be used. The node is selected by giving a key that
+%% this node is containing or by giving the node directly. Note that this
 %% function does not add MULTI or EXEC, so it can be used also for sequences of
 %% commands which are not Redis transactions.
 %%
@@ -348,15 +431,26 @@ qmn2([], [], Acc, _) ->
               when Key :: anystring(),
                    Pool :: atom(),
                    Transaction :: fun((Connection :: pid()) -> redis_result()).
-transaction(Transaction, Key) when is_list(Key); is_binary(Key) ->
+transaction(Transaction, KeyOrPool) when is_function(Transaction) ->
+    transaction(Transaction, ?default_cluster, KeyOrPool).
+
+%% @doc Execute a function on a single connection in a named cluster.
+%%
+%% @see transaction/2
+-spec transaction(Transaction, Cluster, Key | Pool) -> redis_result()
+              when Transaction :: fun((Connection :: pid()) -> redis_result()),
+                   Cluster :: atom(),
+                   Key :: anystring(),
+                   Pool :: atom().
+transaction(Transaction, Cluster, Key) when is_list(Key); is_binary(Key) ->
     Slot = get_key_slot(Key),
-    transaction_retry_loop(Transaction, Slot, 0);
-transaction(Transaction, Pool) when is_atom(Pool) ->
-    transaction_retry_loop(Transaction, Pool, 0).
+    transaction_retry_loop(Cluster, Transaction, Slot, 0);
+transaction(Transaction, Cluster, Pool) when is_atom(Pool) ->
+    transaction_retry_loop(Cluster, Transaction, Pool, 0).
 
 %% Helper for optimistic_locking_transaction.
 transaction(Transaction, Slot, ExpectedValue, Counter) ->
-    case transaction_retry_loop(Transaction, Slot, 0) of
+    case transaction_retry_loop(?default_cluster, Transaction, Slot, 0) of
         Result when Counter =< 0 ->
             Result;
         ExpectedValue ->
@@ -368,29 +462,33 @@ transaction(Transaction, Slot, ExpectedValue, Counter) ->
     end.
 
 %% Helper for transaction/2,4 with retries and backoff like query/3.
--spec transaction_retry_loop(Transaction, Slot | Pool, RetryCounter) ->
+-spec transaction_retry_loop(Cluster, Transaction, Slot | Pool, RetryCounter) ->
           redis_result()
-              when Transaction  :: fun((Connection :: pid()) -> redis_result()),
+              when Cluster      :: atom(),
+                   Transaction  :: fun((Connection :: pid()) -> redis_result()),
                    Slot         :: 0..16383,
                    Pool         :: atom(),
-                   RetryCounter :: 0..?REDIS_CLUSTER_REQUEST_TTL.
-transaction_retry_loop(_, _, ?REDIS_CLUSTER_REQUEST_TTL) ->
+                   RetryCounter :: 0..?redis_cluster_request_max_retries.
+transaction_retry_loop(_Cluster, _Transaction, _SlotOrPool,
+                       ?redis_cluster_request_max_retries) ->
     {error, no_connection};
-transaction_retry_loop(Transaction, SlotOrPool, Counter) ->
+transaction_retry_loop(Cluster, Transaction, SlotOrPool, Counter) ->
     throttle_retries(Counter),
+    State = eredis_cluster_monitor:get_state(Cluster),
     {Pool, Version} =
         case SlotOrPool of
             Slot when is_integer(Slot) ->
-                eredis_cluster_monitor:get_pool_by_slot(Slot);
+                eredis_cluster_monitor:get_pool_by_slot(Slot, State);
             Pool0 when is_atom(Pool0) ->
-                State = eredis_cluster_monitor:get_state(),
                 Version0 = eredis_cluster_monitor:get_state_version(State),
                 {Pool0, Version0}
         end,
     Result = eredis_cluster_pool:transaction(Pool, Transaction),
-    case handle_transaction_result(Result, Version) of
-        retry -> transaction_retry_loop(Transaction, SlotOrPool, Counter + 1);
-        Result -> Result
+    case handle_transaction_result(Result, Cluster, Version) of
+        retry ->
+            transaction_retry_loop(Cluster, Transaction, SlotOrPool, Counter + 1);
+        Result ->
+            Result
     end.
 
 %% =============================================================================
@@ -470,8 +568,8 @@ scan(Node, Cursor, Pattern, Count) when is_atom(Node) ->
 %%                      {Pool2, CommandsPool2}, ...]
 %%   MappingInfo     = [{Pool1, [Command1Position, Command2Position, ...]},
 %%                      {Pool2, CommandsPool2Positions}, ...]
-split_by_pools(Commands) ->
-    State = eredis_cluster_monitor:get_state(),
+split_by_pools(Cluster, Commands) ->
+    State = eredis_cluster_monitor:get_state(Cluster),
     split_by_pools(Commands, 1, [], [], State).
 
 split_by_pools([Command | T], Index, CmdAcc, MapAcc, State) ->
@@ -496,35 +594,37 @@ split_by_pools([], _Index, CmdAcc, MapAcc, State) ->
     MapAcc2 = [{Pool, lists:reverse(Mapping)} || {Pool, Mapping} <- MapAcc],
     {CmdAcc2, MapAcc2, eredis_cluster_monitor:get_state_version(State)}.
 
-query(Command) ->
+query(Cluster, Command) ->
     PoolKey = get_key_from_command(Command),
-    query(Command, PoolKey).
+    query(Cluster, Command, PoolKey).
 
-query(_, undefined) ->
+query(_Cluster, _Command, undefined) ->
     {error, invalid_cluster_command};
-query(Command, PoolKey) ->
-    query(Command, PoolKey, 0).
+query(Cluster, Command, PoolKey) ->
+    query(Cluster, Command, PoolKey, 0).
 
-query_noreply(_, undefined) ->
+query_noreply(_Cluster, _Command, undefined) ->
     {error, invalid_cluster_command};
-query_noreply(Command, PoolKey) ->
+query_noreply(Cluster, Command, PoolKey) ->
     Slot = get_key_slot(PoolKey),
     Transaction = fun(Worker) -> qw_noreply(Worker, Command) end,
-    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot),
+    State = eredis_cluster_monitor:get_state(Cluster),
+    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
     eredis_cluster_pool:transaction(Pool, Transaction),
     %% TODO: Retry if pool is busy? Handle redirects?
     ok.
 
-query(_, _, ?REDIS_CLUSTER_REQUEST_TTL) ->
+query(_Cluster, _Command, _PoolKey, ?redis_cluster_request_max_retries) ->
     {error, no_connection};
-query(Command, PoolKey, Counter) ->
+query(Cluster, Command, PoolKey, Counter) ->
     throttle_retries(Counter),
     Slot = get_key_slot(PoolKey),
-    {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(Slot),
+    State = eredis_cluster_monitor:get_state(Cluster),
+    {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
     Result0 = eredis_cluster_pool:transaction(Pool, fun(W) -> qw(W, Command) end),
-    Result = handle_redirects(Command, Result0, Version),
-    case handle_transaction_result(Result, Version) of
-        retry  -> query(Command, PoolKey, Counter + 1);
+    Result = handle_redirects(Cluster, Command, Result0, Version),
+    case handle_transaction_result(Result, Cluster, Version) of
+        retry  -> query(Cluster, Command, PoolKey, Counter + 1);
         Result -> Result
     end.
 
@@ -532,11 +632,13 @@ query(Command, PoolKey, Counter) ->
 %% follows the redirect. If a MOVED redirect is followed, a refresh
 %% mapping is started in the background. If no redirect is followed,
 %% the original result is returned.
--spec handle_redirects(Command :: redis_simple_command() | redis_pipeline_command(),
+-spec handle_redirects(Cluster :: atom(),
+                       Command :: redis_simple_command() | redis_pipeline_command(),
                        Result  :: redis_simple_result() | redis_pipeline_result(),
                        Version :: integer()) ->
           redis_simple_result() | redis_pipeline_result().
-handle_redirects(Command, {error, <<"ASK ", RedirectInfo/binary>>} = Result, _Version) ->
+handle_redirects(_Cluster, Command,
+                 {error, <<"ASK ", RedirectInfo/binary>>} = Result, _Version) ->
     %% Simple command, simple result.
     case parse_redirect_info(RedirectInfo) of
         {ok, Pool} ->
@@ -551,17 +653,19 @@ handle_redirects(Command, {error, <<"ASK ", RedirectInfo/binary>>} = Result, _Ve
         {error, _NoExistingPool} ->
             Result
     end;
-handle_redirects(Command, {error, <<"MOVED ", RedirectInfo/binary>>} = Result, Version) ->
+handle_redirects(Cluster, Command,
+                 {error, <<"MOVED ", RedirectInfo/binary>>} = Result, Version) ->
     %% Simple command, simple result.
     case parse_redirect_info(RedirectInfo) of
         {ok, Pool} ->
-            eredis_cluster_monitor:async_refresh_mapping(Version),
+            eredis_cluster_monitor:async_refresh_mapping(Cluster, Version),
             eredis_cluster_pool:transaction(Pool, fun(W) -> qw(W, Command) end);
         {error, _NoExistingPool} ->
             Result
     end;
-handle_redirects([[X|_]|_] = Command, Result, Version) when is_list(X) orelse is_binary(X),
-                                                            is_list(Result) ->
+handle_redirects(Cluster, [[X|_]|_] = Command, Result, Version)
+  when is_list(X) orelse is_binary(X),
+       is_list(Result) ->
     %% Pipeline command and pipeline result. If it contains redirects,
     %% follow them if they are all identical and there are no other
     %% errors in the result.
@@ -592,7 +696,7 @@ handle_redirects([[X|_]|_] = Command, Result, Version) when is_list(X) orelse is
                     AskingResult = eredis_cluster_pool:transaction(Pool, AskingTransaction),
                     filter_out_asking_results(AskingCommand, AskingResult);
                 {{ok, Pool}, moved} ->
-                    eredis_cluster_monitor:async_refresh_mapping(Version),
+                    eredis_cluster_monitor:async_refresh_mapping(Cluster, Version),
                     eredis_cluster_pool:transaction(Pool, fun(W) -> qw(W, Command) end);
                 _NoExistingPool ->
                     %% Don't redirect.
@@ -602,7 +706,7 @@ handle_redirects([[X|_]|_] = Command, Result, Version) when is_list(X) orelse is
             %% Don't redirect in this case.
             Result
     end;
-handle_redirects(_Command, Result, _Version) ->
+handle_redirects(_Cluster, _Command, Result, _Version) ->
     %% E.g. error result
     Result.
 
@@ -681,22 +785,22 @@ parse_redirect_info(RedirectInfo) ->
             {error, bad_redirect}
     end.
 
-handle_transaction_result(Results, Version) when is_list(Results) ->
+handle_transaction_result(Results, Cluster, Version) when is_list(Results) ->
     %% Consider all errors, to make sure slot mapping is updated if
     %% needed. (Multiple slot mapping updates have no effect if the
     %% Version is the same.)
-    HandledResults = [handle_transaction_result(Result, Version)
+    HandledResults = [handle_transaction_result(Result, Cluster, Version)
                       || Result <- Results],
     case lists:member(retry, HandledResults) of
         true  -> retry;
         false -> Results
     end;
-handle_transaction_result(Result, Version) ->
+handle_transaction_result(Result, Cluster, Version) ->
     case Result of
         %% If we detect a node went down, we should probably refresh
         %% the slot mapping.
         {error, no_connection} ->
-            eredis_cluster_monitor:refresh_mapping(Version),
+            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% If the tcp connection is closed (connection timeout), the redis worker
@@ -713,13 +817,13 @@ handle_transaction_result(Result, Version) ->
         %% Other TCP issues
         %% See reasons: https://erlang.org/doc/man/inet.html#type-posix
         {error, Reason} when is_atom(Reason) ->
-            eredis_cluster_monitor:refresh_mapping(Version),
+            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Redis explicitly say our slot mapping is incorrect,
         %% we need to refresh it
         {error, <<"MOVED ", _/binary>>} ->
-            eredis_cluster_monitor:refresh_mapping(Version),
+            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Migration ongoing
@@ -732,7 +836,7 @@ handle_transaction_result(Result, Version) ->
 
         %% Hash not served, can be triggered temporary due to resharding
         {error, <<"CLUSTERDOWN ", _/binary>>} ->
-            eredis_cluster_monitor:refresh_mapping(Version),
+            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         Payload ->
@@ -837,7 +941,8 @@ optimistic_locking_transaction(WatchedKey, GetCommand, UpdateFunction) ->
         RedisResult = qw(Worker, [["MULTI"]] ++ UpdateCommand ++ [["EXEC"]]),
         {lists:last(RedisResult), Result}
     end,
-    case transaction(Transaction, Slot, {ok, undefined}, ?OL_TRANSACTION_TTL) of
+    case transaction(Transaction, Slot, {ok, undefined},
+                     ?optimistic_locking_transaction_max_retries) of
         {{ok, undefined}, _} ->  % The key was touched by other client
             {error, resource_busy};
         {{ok, TransactionResult}, UpdateResult} ->
@@ -887,8 +992,8 @@ eval(Script, ScriptHash, Keys, Args) ->
     end.
 
 %% =============================================================================
-%% @doc Returns the connection pool for the Redis node where a command should be
-%% executed.
+%% @doc Returns the connection pool for the Redis node in the default cluster
+%% where a command should be executed.
 %%
 %% The node is selected based on the first key in the command.
 %% @see get_pool_by_key/1
@@ -896,21 +1001,35 @@ eval(Script, ScriptHash, Keys, Args) ->
 %% =============================================================================
 -spec get_pool_by_command(Command::redis_command()) -> atom() | undefined.
 get_pool_by_command(Command) ->
+    get_pool_by_command(?default_cluster, Command).
+
+%% @doc Like get_pool_by_command/1 for a named cluster.
+-spec get_pool_by_command(Cluster :: atom(), Command :: redis_command()) ->
+          atom() | undefined.
+get_pool_by_command(Cluster, Command) ->
     Key = get_key_from_command(Command),
-    get_pool_by_key(Key).
+    get_pool_by_key(Cluster, Key).
 
 %% =============================================================================
-%% @doc Returns the connection pool for the Redis node responsible for the key.
+%% @doc Returns the connection pool for the Redis node responsible for the key
+%% in the default cluster.
 %% @end
 %% =============================================================================
 -spec get_pool_by_key(Key::anystring()) -> atom() | undefined.
 get_pool_by_key(Key) ->
+    get_pool_by_key(?default_cluster, Key).
+
+%% @doc Like get_pool_by_key/1 for a named cluster.
+-spec get_pool_by_key(Cluster :: atom(), Key :: anystring()) ->
+          atom() | undefined.
+get_pool_by_key(Cluster, Key) ->
     Slot = get_key_slot(Key),
-    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot),
+    State = eredis_cluster_monitor:get_state(Cluster),
+    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
     Pool.
 
 %% =============================================================================
-%% @doc Returns the connection pools for all Redis nodes.
+%% @doc Returns the connection pools for all Redis nodes in the default cluster.
 %%
 %% This is usedful for commands to a specific node using `qn/2' and
 %% `transaction/2'.
@@ -920,7 +1039,12 @@ get_pool_by_key(Key) ->
 %% =============================================================================
 -spec get_all_pools() -> [atom()].
 get_all_pools() ->
-    eredis_cluster_monitor:get_all_pools().
+    eredis_cluster_monitor:get_all_pools(?default_cluster).
+
+%% @doc Returns the connection pools for all Redis nodes in a named cluster.
+-spec get_all_pools(Cluster :: atom()) -> [atom()].
+get_all_pools(Cluster) ->
+    eredis_cluster_monitor:get_all_pools(Cluster).
 
 %% =============================================================================
 %% @doc Return the hash slot from the key

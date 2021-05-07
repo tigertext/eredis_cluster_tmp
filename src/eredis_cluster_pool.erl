@@ -3,9 +3,9 @@
 -behaviour(supervisor).
 
 %% API.
--export([create/3]).
+-export([create/4]).
 -export([get_existing_pool/2]).
--export([stop/1]).
+-export([stop/2]).
 -export([transaction/2]).
 
 %% Supervisor
@@ -14,9 +14,9 @@
 
 -include("eredis_cluster.hrl").
 
--spec create(Host::string(), Port::integer(), options()) ->
+-spec create(PoolSup::pid(), Host::string(), Port::integer(), options()) ->
     {ok, PoolName::atom()} | {error, PoolName::atom()}.
-create(Host, Port, Options) ->
+create(PoolSup, Host, Port, Options) ->
     PoolName = get_name(Host, Port),
 
     case whereis(PoolName) of
@@ -34,8 +34,7 @@ create(Host, Port, Options) ->
                         {max_overflow, MaxOverflow}],
 
             ChildSpec = poolboy:child_spec(PoolName, PoolArgs, WorkerArgs),
-
-            {Result, _} = supervisor:start_child(?MODULE, ChildSpec),
+            {Result, _} = supervisor:start_child(PoolSup, ChildSpec),
             {Result, PoolName};
         _ ->
             {ok, PoolName}
@@ -69,10 +68,10 @@ transaction(PoolName, Transaction) ->
             {error, no_connection}
     end.
 
--spec stop(PoolName::atom()) -> ok.
-stop(PoolName) ->
-    supervisor:terminate_child(?MODULE, PoolName),
-    supervisor:delete_child(?MODULE, PoolName),
+-spec stop(PoolSup :: pid(), PoolName :: atom()) -> ok.
+stop(PoolSup, PoolName) ->
+    supervisor:terminate_child(PoolSup, PoolName),
+    supervisor:delete_child(PoolSup, PoolName),
     ok.
 
 -spec get_name(Host::string(), Port::integer()) -> PoolName::atom().
@@ -81,7 +80,7 @@ get_name(Host, Port) ->
 
 -spec start_link() -> {ok, pid()}.
 start_link() ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+    supervisor:start_link(?MODULE, []).
 
 -spec init([])
           -> {ok, {{supervisor:strategy(), 1, 5}, [supervisor:child_spec()]}}.

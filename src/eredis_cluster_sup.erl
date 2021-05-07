@@ -2,22 +2,30 @@
 -module(eredis_cluster_sup).
 -behaviour(supervisor).
 
+%% Internal API.
+-export([start_link/1, get_pool_sup/1]).
+
 %% Supervisor.
--export([start_link/0]).
 -export([init/1]).
 
--spec start_link() -> {ok, pid()}.
-start_link() ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+-spec start_link(Name :: atom()) -> {ok, pid()}.
+start_link(Name) ->
+    supervisor:start_link(?MODULE, Name).
 
--spec init([])
+get_pool_sup(ClusterSup) ->
+    [Pid] = [Pid || {eredis_cluster_pool, Pid, _, _}
+                        <- supervisor:which_children(ClusterSup)],
+    true = is_pid(Pid),
+    Pid.
+
+-spec init(Name :: atom())
           -> {ok, {{supervisor:strategy(), 1, 5}, [supervisor:child_spec()]}}.
-init([]) ->
+init(Name) ->
     Procs = [{eredis_cluster_pool,
-                {eredis_cluster_pool, start_link, []},
-                permanent, 5000, supervisor, [dynamic]},
-            {eredis_cluster_monitor,
-                {eredis_cluster_monitor, start_link, []},
-                permanent, 5000, worker, [dynamic]}
+              {eredis_cluster_pool, start_link, []},
+              permanent, 5000, supervisor, [eredis_cluster_pool]},
+             {eredis_cluster_monitor,
+              {eredis_cluster_monitor, start_link, [Name]},
+              permanent, 5000, worker, [eredis_cluster_monitor]}
             ],
-    {ok, {{one_for_one, 1, 5}, Procs}}.
+    {ok, {{rest_for_one, 1, 5}, Procs}}.

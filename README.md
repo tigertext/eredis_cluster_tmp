@@ -49,7 +49,7 @@ eredis_cluster:qmn([["GET", "a"], ["GET", "b"], ["GET", "c"]]).
 eredis_cluster:transaction([["LPUSH", "a", "a"], ["LPUSH", "a", "b"], ["LPUSH", "a", "c"]]).
 
 %% Transaction Function
-Function = fun(Worker) ->
+TransactionFun = fun(Worker) ->
     eredis_cluster:qw(Worker, ["WATCH", "abc"]),
     {ok, Var} = eredis_cluster:qw(Worker, ["GET", "abc"]),
 
@@ -59,7 +59,7 @@ Function = fun(Worker) ->
     {ok, Result} = eredis_cluster:qw(Worker,[["MULTI"], ["SET", "abc", Var2], ["EXEC"]]),
     lists:last(Result)
 end,
-eredis_cluster:transaction(Function, "abc").
+eredis_cluster:transaction(TransactionFun, "abc").
 
 %% Optimistic Locking Transaction
 Function = fun(GetResult) ->
@@ -94,6 +94,35 @@ eredis_cluster:qa(["FLUSHDB"]).
 
 %% Execute a query on the server containing the key "TEST"
 eredis_cluster:qk(["FLUSHDB"], "TEST").
+```
+
+### Multi-cluster
+
+If you need to work with multiple Redis clusters in the same application, the
+functions `connect/3`, `disconnect/1`, `q/2`, `qk/3`, `qa/2`, `qa2/2`, `qmn/2`,
+`transaction/3`, `get_pool_by_command/2`, `get_pool_by_key/2`, `get_all_pools/1`
+accept a named cluster parameter. Multi-cluster support was added in
+eredis_cluster 0.7.0.
+
+```Erlang
+eredis_cluster:start().
+eredis_cluster:connect(mycluster, [{"127.0.0.1", 30001},
+                                   {"127.0.0.1", 30002}], []).
+
+{ok, Result} = eredis_cluster:q(mycluster, ["GET", "foo"]),
+
+%% Query on all cluster nodes
+eredis_cluster:qa(mycluster, ["FLUSHDB"]).
+
+%% Execute a query on the server containing the key "TEST"
+eredis_cluster:qk(mycluster, ["FLUSHDB"], "TEST").
+
+%% Scan one of the nodes in a cluster
+[MyclusterNode1 | _] = eredis_cluster:get_all_pools(mycluster),
+eredis_cluster:qn(["SCAN", 0, "COUNT", 10], MyclusterNode1),
+
+%% Transaction (See above for TransactionFun example)
+eredis_cluster:transaction(TransactionFun, mycluster, "abc").
 ```
 
 ## Compilation and tests
