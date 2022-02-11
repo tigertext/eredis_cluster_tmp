@@ -678,8 +678,6 @@ start() -&gt; ok | {error, Reason::term()}
 
 Start application.
 
-The same as `application:start(eredis_cluster)`.
-
 If `eredis_cluster` is configured with init nodes using the application
 environment, using a config file or by explicitly by calling
 `application:set_env(eredis_cluster, init_nodes, InitNodes)`, the cluster is

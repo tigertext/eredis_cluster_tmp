@@ -4,7 +4,8 @@ Change log
 0.7.0
 -----
 
-* Support multiple clusters.
+* Support multiple clusters
+* List runtime dependencies in .app.src
 
 0.6.1
 -----
