@@ -17,7 +17,7 @@ all() ->
 init_per_testcase(_Tc, Config) ->
     {ok, ListenSocket} = gen_tcp:listen(0, [binary, {active, false}]),
     {ok, {_, Port}} = inet:sockname(ListenSocket),
-    ok = application:start(eredis_cluster),
+    {ok, _} = application:ensure_all_started(eredis_cluster),
     spawn_link(fun() ->
                        eredis_cluster:connect([{"127.0.0.1", Port}],
                                               [{pool_size, 1},

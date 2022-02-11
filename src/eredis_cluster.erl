@@ -53,8 +53,6 @@
 
 %% @doc Start application.
 %%
-%% The same as `application:start(eredis_cluster)'.
-%%
 %% If `eredis_cluster' is configured with init nodes using the application
 %% environment, using a config file or by explicitly by calling
 %% `application:set_env(eredis_cluster, init_nodes, InitNodes)', the cluster is
@@ -62,7 +60,10 @@
 %% later using `connect/1,2'.
 -spec start() -> ok | {error, Reason::term()}.
 start() ->
-    application:start(?MODULE).
+    case application:ensure_all_started(?MODULE) of
+        {ok, _} -> ok;
+        Error -> Error
+    end.
 
 %% @doc Stop application.
 %%
