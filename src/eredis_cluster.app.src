@@ -1,11 +1,9 @@
 {application, eredis_cluster, [
     {description, "Eredis Cluster"},
-    {vsn, "0.6.1"},
+    {vsn, "0.7.0"},
     {modules, []},
     {registered, [
-        eredis_cluster_monitor,
-        eredis_cluster_pool,
-        eredis_cluster_sup
+        eredis_cluster_sup_sup
     ]},
     {applications, [
         kernel,

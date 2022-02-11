@@ -1,6 +1,11 @@
 Change log
 ==========
 
+0.7.0
+-----
+
+* Support multiple clusters.
+
 0.6.1
 -----
 
