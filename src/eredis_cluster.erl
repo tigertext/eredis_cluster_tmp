@@ -52,6 +52,7 @@
 -include("eredis_cluster.hrl").
 
 -define(RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result), lager:info("Debug - resource queue re-design cluster ~p command ~p error ~p", [Cluster, Command, Result])).
+-define(RESOURCE_QUEUE_REDESIGN_LOG_PREFIX, "Debug - resource queue re-design ").
 
 %% @doc Start application.
 %%
@@ -627,7 +628,9 @@ query(Cluster, Command, PoolKey, Counter) ->
     Result0 = eredis_cluster_pool:transaction(Pool, fun(W) -> qw(W, Command) end),
     Result = handle_redirects(Cluster, Command, Result0, Version),
     case handle_transaction_result(Result, Cluster, Version) of
-        retry  -> query(Cluster, Command, PoolKey, Counter + 1);
+        retry  ->
+            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "retry, cluster ~p command ~p count ~p", [Cluster, Command, Counter+1]),
+            query(Cluster, Command, PoolKey, Counter + 1);
         Result -> Result
     end.
 
@@ -714,6 +717,8 @@ handle_redirects(Cluster, [[X|_]|_] = Command, Result, Version)
             %% Don't redirect in this case.
             Result
     end;
+handle_redirects(_Cluster, _Command, {ok, _} = Result, _Version) ->
+    Result;
 handle_redirects(Cluster, Command, Result, _Version) ->
     %% E.g. error result
     ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result),
