@@ -51,6 +51,8 @@
 
 -include("eredis_cluster.hrl").
 
+-define(RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result), lager:info("Debug - resource queue re-design cluster ~p command ~p error ~p", [Cluster, Command, Result])).
+
 %% @doc Start application.
 %%
 %% If `eredis_cluster' is configured with init nodes using the application
@@ -638,9 +640,10 @@ query(Cluster, Command, PoolKey, Counter) ->
                        Result  :: redis_simple_result() | redis_pipeline_result(),
                        Version :: integer()) ->
           redis_simple_result() | redis_pipeline_result().
-handle_redirects(_Cluster, Command,
+handle_redirects(Cluster, Command,
                  {error, <<"ASK ", RedirectInfo/binary>>} = Result, _Version) ->
     %% Simple command, simple result.
+    ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result),
     case parse_redirect_info(RedirectInfo) of
         {ok, Pool} ->
             AskingPipeline = [[<<"ASKING">>], Command],
@@ -657,6 +660,7 @@ handle_redirects(_Cluster, Command,
 handle_redirects(Cluster, Command,
                  {error, <<"MOVED ", RedirectInfo/binary>>} = Result, Version) ->
     %% Simple command, simple result.
+    ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result),
     case parse_redirect_info(RedirectInfo) of
         {ok, Pool} ->
             eredis_cluster_monitor:async_refresh_mapping(Cluster, Version),
@@ -671,11 +675,14 @@ handle_redirects(Cluster, [[X|_]|_] = Command, Result, Version)
     %% follow them if they are all identical and there are no other
     %% errors in the result.
     {Redirects, OtherErrors} =
-        lists:foldl(fun ({error, <<"MOVED ", _/binary>> = Redirect}, {RedirectAcc, OtherAcc}) ->
+        lists:foldl(fun ({error, <<"MOVED ", _/binary>> = Redirect} = Res, {RedirectAcc, OtherAcc}) ->
+                            ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Res),
                             {[Redirect|RedirectAcc], OtherAcc};
-                        ({error, <<"ASK ", _/binary>> = Redirect}, {RedirectAcc, OtherAcc}) ->
+                        ({error, <<"ASK ", _/binary>> = Redirect} = Res, {RedirectAcc, OtherAcc}) ->
+                            ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Res),
                             {[Redirect|RedirectAcc], OtherAcc};
-                        ({error, Other}, {RedirectAcc, OtherAcc}) ->
+                        ({error, Other} = Res, {RedirectAcc, OtherAcc}) ->
+                            ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Res),
                             {RedirectAcc, [Other|OtherAcc]};
                         (_, Acc) ->
                             Acc
@@ -707,8 +714,9 @@ handle_redirects(Cluster, [[X|_]|_] = Command, Result, Version)
             %% Don't redirect in this case.
             Result
     end;
-handle_redirects(_Cluster, _Command, Result, _Version) ->
+handle_redirects(Cluster, Command, Result, _Version) ->
     %% E.g. error result
+    ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result),
     Result.
 
 %% If ASKING has been added to a pipeline command, remove the ASKING

@@ -14,6 +14,8 @@
 
 -include("eredis_cluster.hrl").
 
+-define(RESOURCE_QUEUE_REDESIGN_LOG_PREFIX, "Debug - resource queue re-design ").
+
 -spec create(PoolSup::pid(), Host::string(), Port::integer(), options()) ->
     {ok, PoolName::atom()} | {error, PoolName::atom()}.
 create(PoolSup, Host, Port, Options) ->
@@ -62,9 +64,11 @@ transaction(PoolName, Transaction) ->
     catch
         exit:{timeout, _GenServerCall} ->
             %% Poolboy checkout timeout, but the pool is consistent.
+            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error timeout ", [PoolName, Transaction]),
             {error, pool_busy};
-        exit:_ ->
+        exit:Error ->
             %% Pool doesn't exist? Refresh mapping solves this.
+            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error ~p ", [PoolName, Transaction, Error]),
             {error, no_connection}
     end.
 
