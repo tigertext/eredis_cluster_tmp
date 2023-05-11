@@ -8,7 +8,7 @@
   0},
  {<<"poolboy">>,
   {git,"git@github.com:tigertext/poolboy.git",
-       {ref,"83ef0ff8bd14cdaa49dcc6a670d9c434562886af"}},
+       {ref,"86d16e436a78b436b890dbec96dbf999dcf704cc"}},
   0}]}.
 [
 {pkg_hash,[
