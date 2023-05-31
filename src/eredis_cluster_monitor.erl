@@ -12,7 +12,7 @@
 -export([start_link/1]).
 -export([connect/3, disconnect/2]).
 -export([refresh_mapping/2, async_refresh_mapping/2]).
--export([get_state/1, get_state_version/1, is_init_state/1]).
+-export([get_state/1, get_state_version/1]).
 -export([get_pool_by_slot/1, get_pool_by_slot/2]).
 -export([get_all_pools/0, get_all_pools/1]).
 -export([get_cluster_slots/1, get_cluster_nodes/1]).
@@ -74,12 +74,6 @@ get_state(Cluster) ->
         [] ->
             #state{}
     end.
-
-%% @private
-is_init_state(#state{slots_maps = {}}) ->
-    true;
-is_init_state(_State) ->
-    false.
 
 %% @private
 get_state_version(State) ->
