@@ -26,7 +26,7 @@
 -export([transaction/1, transaction/2]).
 
 %% Commands to named cluster
--export([q/2, q1/2, qk/3, qa/2, qa2/2, qmn/2]).
+-export([q/2, q1/2,qk/3, qa/2, qa2/2, qmn/2]).
 -export([transaction/3]).
 
 %% Specific redis command implementation (default cluster)
@@ -194,14 +194,13 @@ q1(Command) ->
 q1(Cluster, Command) ->
     State = eredis_cluster_monitor:get_state(Cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
-    case eredis_cluster_monitor:get_all_pools(State) of
+    case eredis_cluster_monitor:is_init_state(State) of
         [] ->
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             query(Cluster, Command);
         _ ->
             query(Cluster, Command)
     end.
-
 
 %% @doc Executes a simple or pipeline of command on the Redis node where the
 %% provided key resides on the default cluster.
