@@ -22,11 +22,11 @@
 -export([connect/1, connect/2, connect/3, disconnect/1]).
 
 %% Generic redis call (default cluster)
--export([q/1, q1/1, qk/2, q_noreply/1, qp/1, qa/1, qa2/1, qn/2, qw/2, qmn/1]).
+-export([q/1, q1/2, qk/2, q_noreply/1, qp/1, qa/1, qa2/1, qn/2, qw/2, qmn/1]).
 -export([transaction/1, transaction/2]).
 
 %% Commands to named cluster
--export([q/2, q1/2,qk/3, qa/2, qa2/2, qmn/2]).
+-export([q/2, q1/3,qk/3, qa/2, qa2/2, qmn/2]).
 -export([transaction/3]).
 
 %% Specific redis command implementation (default cluster)
@@ -181,25 +181,34 @@ q(Cluster, Command) ->
 
 %% =============================================================================
 %% @doc This function executes simple or pipelined command on a single redis
-%% node, which is selected according to the first key in the command. But it
+%% node, which is selected according to the first key in the command. It
 %% will refresh the mapping if the monitor pool is empty.
 %% @end
 %% =============================================================================
--spec q1(Command::redis_command()) -> redis_result().
-q1(Command) ->
-    query(?default_cluster, Command).
+-spec q1(Command::redis_command(), Time::integer()) -> redis_result().
+q1(Command, Time) ->
+    q1(?default_cluster, Command, Time).
 
-%% @doc Like q/1 but will refresh the mapping if the monitor pool is empty.
--spec q1(Cluster :: atom(), Command :: redis_command()) -> redis_result().
-q1(Cluster, Command) ->
-    State = eredis_cluster_monitor:get_state(Cluster),
-    Version = eredis_cluster_monitor:get_state_version(State),
-    case eredis_cluster_monitor:is_init_state(State) of
-        [] ->
+%% @doc Like q/2 but will refresh the mapping if the monitor pool is empty.
+-spec q1(Cluster :: atom(), Command :: redis_command(), Time::integer()) -> redis_result().
+q1(_Cluster, _Command, 0) ->
+    {error, no_connection};
+q1(Cluster, Command, Count) when Count > 0 ->
+    try
+        query(Cluster, Command)
+    catch
+        exit:{noproc,_}:_Trace ->
+            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "retry, mapping not refresh, cluster:~p, Count:~p", [Cluster, Count]),
+            State = eredis_cluster_monitor:get_state(Cluster),
+            Version = eredis_cluster_monitor:get_state_version(State),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
-            query(Cluster, Command);
-        _ ->
-            query(Cluster, Command)
+            q1(Cluster, Command, Count - 1);
+        Error:Reason:Trace ->
+            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "retry, cluster:~p, Count:~p, Error:~p, Reason:~p, Trace:~p", [Cluster, Count, Error, Reason, Trace]),
+            State = eredis_cluster_monitor:get_state(Cluster),
+            Version = eredis_cluster_monitor:get_state_version(State),
+            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
+            q1(Cluster, Command, Count - 1)
     end.
 
 %% @doc Executes a simple or pipeline of command on the Redis node where the
