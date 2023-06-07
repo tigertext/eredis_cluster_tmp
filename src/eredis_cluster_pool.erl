@@ -64,11 +64,21 @@ transaction(PoolName, Transaction) ->
     catch
         exit:{timeout, _GenServerCall} ->
             %% Poolboy checkout timeout, but the pool is consistent.
-            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error timeout ", [PoolName, Transaction]),
+            try
+                tt_prometheus:report_failed_write_for_resource_queue("retry_times", PoolName),
+            catch
+                _E ->
+                    lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error timeout", [Cluster, Command])
+            end,
             {error, pool_busy};
         exit:Error ->
             %% Pool doesn't exist? Refresh mapping solves this.
-            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error ~p ", [PoolName, Transaction, Error]),
+            try
+                tt_prometheus:report_failed_write_for_resource_queue("retry_times", PoolName),
+            catch
+                _E ->
+                    lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error ~p", [Cluster, Command, Error])
+            end,
             {error, no_connection}
     end.
 
