@@ -192,21 +192,23 @@ q1(Command, Time) ->
 %% @doc Like q/2 but will refresh the mapping if the monitor pool is empty.
 -spec q1(Cluster :: atom(), Command :: redis_command(), Time::integer()) -> redis_result().
 q1(Cluster, Command, 0) ->
-    lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed, cluster ~p command ~p ", [Cluster, Command]),
-    tt_prometheus:report_presence(1),
+    try
+        tt_prometheus:report_failed_write_for_resource_queue("rewrite_times", Cluster)
+    catch
+        _E ->
+            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed, cluster ~p command ~p", [Cluster, Command])
+    end,
     {error, no_connection};
 q1(Cluster, Command, Count) when Count > 0 ->
     try
         query(Cluster, Command)
     catch
         exit:{noproc,_}:_Trace ->
-            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "retry, mapping not refresh, cluster:~p, Count:~p", [Cluster, Count]),
             State = eredis_cluster_monitor:get_state(Cluster),
             Version = eredis_cluster_monitor:get_state_version(State),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             q1(Cluster, Command, Count - 1);
         Error:Reason:Trace ->
-            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "retry, cluster:~p, Count:~p, Error:~p, Reason:~p, Trace:~p", [Cluster, Count, Error, Reason, Trace]),
             State = eredis_cluster_monitor:get_state(Cluster),
             Version = eredis_cluster_monitor:get_state_version(State),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
@@ -663,7 +665,6 @@ query(Cluster, Command, PoolKey, Counter) ->
     Result = handle_redirects(Cluster, Command, Result0, Version),
     case handle_transaction_result(Result, Cluster, Version) of
         retry  ->
-            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "retry, cluster ~p command ~p count ~p", [Cluster, Command, Counter+1]),
             query(Cluster, Command, PoolKey, Counter + 1);
         Result -> Result
     end.
