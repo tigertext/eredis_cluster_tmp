@@ -193,6 +193,7 @@ q1(Command, Time) ->
 -spec q1(Cluster :: atom(), Command :: redis_command(), Time::integer()) -> redis_result().
 q1(Cluster, Command, 0) ->
     lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed, cluster ~p command ~p ", [Cluster, Command]),
+    tt_prometheus:report_presence_connected_users(1),
     {error, no_connection};
 q1(Cluster, Command, Count) when Count > 0 ->
     try
