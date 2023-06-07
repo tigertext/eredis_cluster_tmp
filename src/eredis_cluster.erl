@@ -191,7 +191,8 @@ q1(Command, Time) ->
 
 %% @doc Like q/2 but will refresh the mapping if the monitor pool is empty.
 -spec q1(Cluster :: atom(), Command :: redis_command(), Time::integer()) -> redis_result().
-q1(_Cluster, _Command, 0) ->
+q1(Cluster, Command, 0) ->
+    lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed, cluster ~p command ~p ", [Cluster, Command]),
     {error, no_connection};
 q1(Cluster, Command, Count) when Count > 0 ->
     try
