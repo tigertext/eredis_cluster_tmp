@@ -196,7 +196,7 @@ q1(Cluster, Command, 0) ->
         tt_prometheus:report_failed_write_for_resource_queue("rewrite_times", Cluster)
     catch
         _E ->
-            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed, cluster ~p command ~p", [Cluster, Command])
+            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query crashed, cluster ~p command ~p", [Cluster, Command])
     end,
     {error, no_connection};
 q1(Cluster, Command, Count) when Count > 0 ->
@@ -208,7 +208,7 @@ q1(Cluster, Command, Count) when Count > 0 ->
             Version = eredis_cluster_monitor:get_state_version(State),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             q1(Cluster, Command, Count - 1);
-        Error:Reason:Trace ->
+        _Error:_Reason:_Trace ->
             State = eredis_cluster_monitor:get_state(Cluster),
             Version = eredis_cluster_monitor:get_state_version(State),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
@@ -654,7 +654,9 @@ query_noreply(Cluster, Command, PoolKey) ->
     %% TODO: Retry if pool is busy? Handle redirects?
     ok.
 
-query(_Cluster, _Command, _PoolKey, ?redis_cluster_request_max_retries) ->
+query(Cluster, Command, _PoolKey, ?redis_cluster_request_max_retries) ->
+    lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed with max time ~p, cluster ~p command ~p",
+        [?redis_cluster_request_max_retries, Cluster, Command]),
     {error, no_connection};
 query(Cluster, Command, PoolKey, Counter) ->
     throttle_retries(Counter),
