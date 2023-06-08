@@ -67,7 +67,7 @@ transaction(PoolName, Transaction) ->
             try
                 tt_prometheus:report_failed_write_for_resource_queue("retry_times", PoolName),
             catch
-                _E ->
+                _E:_R ->
                     lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error timeout", [Cluster, Command])
             end,
             {error, pool_busy};
@@ -76,7 +76,7 @@ transaction(PoolName, Transaction) ->
             try
                 tt_prometheus:report_failed_write_for_resource_queue("retry_times", PoolName),
             catch
-                _E ->
+                _E:_R ->
                     lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error ~p", [Cluster, Command, Error])
             end,
             {error, no_connection}

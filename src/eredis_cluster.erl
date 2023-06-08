@@ -195,7 +195,7 @@ q1(Cluster, Command, 0) ->
     try
         tt_prometheus:report_failed_write_for_resource_queue("rewrite_times", Cluster)
     catch
-        _E ->
+        _E:_R ->
             lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query crashed, cluster ~p command ~p", [Cluster, Command])
     end,
     {error, no_connection};
