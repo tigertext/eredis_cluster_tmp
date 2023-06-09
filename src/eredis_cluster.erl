@@ -193,7 +193,7 @@ q1(Command, Time) ->
 -spec q1(Cluster :: atom(), Command :: redis_command(), Time::integer()) -> redis_result().
 q1(Cluster, Command, 0) ->
     try
-        tt_prometheus:report_failed_write_for_resource_queue("rewrite_times", Cluster)
+        tt_prometheus:report_failed_write_for_resource_queue("write_crash_times", Cluster)
     catch
         _E ->
             lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query crashed, cluster ~p command ~p", [Cluster, Command])
@@ -655,8 +655,13 @@ query_noreply(Cluster, Command, PoolKey) ->
     ok.
 
 query(Cluster, Command, _PoolKey, ?redis_cluster_request_max_retries) ->
-    lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed with max time ~p, cluster ~p command ~p",
-        [?redis_cluster_request_max_retries, Cluster, Command]),
+    try
+        tt_prometheus:report_failed_write_for_resource_queue("write_failed_reach_max_times", Cluster)
+    catch
+        _E ->
+            lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed with max time ~p, cluster ~p command ~p",
+                [?redis_cluster_request_max_retries, Cluster, Command])
+    end,
     {error, no_connection};
 query(Cluster, Command, PoolKey, Counter) ->
     throttle_retries(Counter),
