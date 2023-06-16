@@ -1212,12 +1212,14 @@ memory_arg([Subcommand | Args]) ->
         _Other  -> undefined
     end.
 
-reconnect(Cluster, ConfigName) ->
+reconnect(Cluster = memorydb_for_resource_queue, ConfigName) ->
     {ok, Config} = application:get_env(ttserver, ConfigName),
     InitNodes = proplists:get_value(init_nodes, Config),
     PoolMaxOverflow = proplists:get_value(pool_max_overflow, Config),
     PoolSize = proplists:get_value(pool_size, Config),
-    ok = connect(Cluster, InitNodes, [{pool_max_overflow, PoolMaxOverflow}, {pool_size, PoolSize}]).
+    ok = connect(Cluster, InitNodes, [{pool_max_overflow, PoolMaxOverflow}, {pool_size, PoolSize}]);
+reconnect(_Cluster, _ConfigName) ->
+       ok.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
