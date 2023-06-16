@@ -204,14 +204,10 @@ q1(Cluster, Command, Count) when Count > 0 ->
         query(Cluster, Command)
     catch
         exit:{noproc,_}:_Trace ->
-            State = eredis_cluster_monitor:get_state(Cluster),
-            Version = eredis_cluster_monitor:get_state_version(State),
-            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
+            reconnect(Cluster, memorydb_for_resource_queue),
             q1(Cluster, Command, Count - 1);
         _Error:_Reason:_Trace ->
-            State = eredis_cluster_monitor:get_state(Cluster),
-            Version = eredis_cluster_monitor:get_state_version(State),
-            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
+            reconnect(Cluster, memorydb_for_resource_queue),
             q1(Cluster, Command, Count - 1)
     end.
 
@@ -656,6 +652,7 @@ query_noreply(Cluster, Command, PoolKey) ->
 
 query(Cluster, Command, _PoolKey, ?redis_cluster_request_max_retries) ->
     try
+        reconnect(Cluster, memorydb_for_resource_queue),
         tt_prometheus:report_failed_write_for_resource_queue("write_failed_reach_max_times", Cluster)
     catch
         _E ->
@@ -1214,6 +1211,13 @@ memory_arg([Subcommand | Args]) ->
         "usage" -> nth_arg(1, Args);
         _Other  -> undefined
     end.
+
+reconnect(Cluster, ConfigName) ->
+    {ok, Config} = application:get_env(ttserver, ConfigName),
+    InitNodes = proplists:get_value(init_nodes, Config),
+    PoolMaxOverflow = proplists:get_value(pool_max_overflow, Config),
+    PoolSize = proplists:get_value(pool_size, Config),
+    ok = connect(Cluster, InitNodes, [{pool_max_overflow, PoolMaxOverflow}, {pool_size, PoolSize}]).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
