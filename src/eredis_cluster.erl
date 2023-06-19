@@ -853,7 +853,8 @@ handle_transaction_result(Result, Cluster, Version) ->
         %% If we detect a node went down, we should probably refresh
         %% the slot mapping.
         {error, no_connection} ->
-            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
+            reconnect(Cluster, memorydb_for_resource_queue),
+            %eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% If the tcp connection is closed (connection timeout), the redis worker
@@ -870,7 +871,8 @@ handle_transaction_result(Result, Cluster, Version) ->
         %% Other TCP issues
         %% See reasons: https://erlang.org/doc/man/inet.html#type-posix
         {error, Reason} when is_atom(Reason) ->
-            eredis_cluster_monitor:refresh_mapping(Cluster, Version),
+            reconnect(Cluster, memorydb_for_resource_queue),
+            %eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Redis explicitly say our slot mapping is incorrect,
