@@ -204,10 +204,20 @@ q1(Cluster, Command, Count) when Count > 0 ->
         query(Cluster, Command)
     catch
         exit:{noproc,_}:_Trace ->
-            reconnect(Cluster, memorydb_for_resource_queue),
+            try
+                reconnect(Cluster, memorydb_for_resource_queue)
+            catch
+                _E ->
+                    ok
+            end,
             q1(Cluster, Command, Count - 1);
         _Error:_Reason:_Trace ->
-            reconnect(Cluster, memorydb_for_resource_queue),
+            try
+                reconnect(Cluster, memorydb_for_resource_queue)
+            catch
+                _E ->
+                    ok
+            end,
             q1(Cluster, Command, Count - 1)
     end.
 

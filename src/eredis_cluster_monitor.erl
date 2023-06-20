@@ -128,15 +128,11 @@ get_pool_by_slot(Slot, State) ->
 %% =============================================================================
 -spec reload_slots_map(State::#state{}) -> NewState::#state{}.
 reload_slots_map(State) ->
-    lager:info("eredis_cluster_monitor reload_slots_map start, ~p,~p", [erlang:now(), State]),
     OldSlotsMaps = tuple_to_list(State#state.slots_maps),
 
     Options = get_current_options(State),
-    lager:info("eredis_cluster_monitor reload_slots_map 1, ~p,~p", [erlang:now(), State]),
     ClusterSlots = get_cluster_slots(State, Options),
-    lager:info("eredis_cluster_monitor reload_slots_map 2, ~p,~p", [erlang:now(), State]),
     NewSlotsMaps = parse_cluster_slots(ClusterSlots, Options),
-    lager:info("eredis_cluster_monitor reload_slots_map 3, ~p,~p", [erlang:now(), State]),
     %% Find old slots_maps with nodes still in use.
     CommonInOldMap = lists:flatmap(
                        fun(#slots_map{node = Node} = OldElem) ->
@@ -149,15 +145,11 @@ reload_slots_map(State) ->
     %% Disconnect non-used nodes
     RemovedFromOldMap = remove_list_elements(OldSlotsMaps, CommonInOldMap),
     PoolSup = State#state.pool_sup,
-    lager:info("eredis_cluster_monitor reload_slots_map 4, ~p,~p", [erlang:now(), State]),
     [close_connection(PoolSup, SlotsMap) || SlotsMap <- RemovedFromOldMap],
-    lager:info("eredis_cluster_monitor reload_slots_map 5, ~p,~p", [erlang:now(), State]),
 
     %% Connect to new nodes
     ConnectedSlotsMaps = connect_all_slots(State#state.pool_sup, NewSlotsMaps),
-    lager:info("eredis_cluster_monitor reload_slots_map 6, ~p,~p", [erlang:now(), State]),
     create_slots_cache(State#state.slots_table, ConnectedSlotsMaps),
-    lager:info("eredis_cluster_monitor reload_slots_map 7, ~p,~p", [erlang:now(), State]),
     NewState = State#state{
         slots_maps = list_to_tuple(ConnectedSlotsMaps),
         version = State#state.version + 1
@@ -166,7 +158,7 @@ reload_slots_map(State) ->
     Cluster = this_cluster(),
     true = ets:insert(?cluster_state_table(Cluster),
                       [{cluster_state, NewState}]),
-    lager:info("eredis_cluster_monitor reload_slots_map end, ~p,~p", [erlang:now(), State]),
+                      
     NewState.
 
 %% =============================================================================
