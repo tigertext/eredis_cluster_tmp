@@ -158,7 +158,7 @@ reload_slots_map(State) ->
     Cluster = this_cluster(),
     true = ets:insert(?cluster_state_table(Cluster),
                       [{cluster_state, NewState}]),
-
+                      
     NewState.
 
 %% =============================================================================
