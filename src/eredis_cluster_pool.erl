@@ -14,8 +14,6 @@
 
 -include("eredis_cluster.hrl").
 
--define(RESOURCE_QUEUE_REDESIGN_LOG_PREFIX, "Debug - resource queue re-design ").
-
 -spec create(PoolSup::pid(), Host::string(), Port::integer(), options()) ->
     {ok, PoolName::atom()} | {error, PoolName::atom()}.
 create(PoolSup, Host, Port, Options) ->
@@ -64,21 +62,11 @@ transaction(PoolName, Transaction) ->
     catch
         exit:{timeout, _GenServerCall} ->
             %% Poolboy checkout timeout, but the pool is consistent.
-            try
-                tt_prometheus:report_failed_write_for_resource_queue("retry_times", PoolName)
-            catch
-                _E:_R ->
-                    lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error timeout", [PoolName, Transaction])
-            end,
+            tt_prometheus:report_failed_write_for_resource_queue("retry_times", PoolName),
             {error, pool_busy};
-        exit:Error ->
+        exit:_Error ->
             %% Pool doesn't exist? Refresh mapping solves this.
-            try
-                tt_prometheus:report_failed_write_for_resource_queue("retry_times", PoolName)
-            catch
-                _E:_R ->
-                    lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "PoolName ~p Transaction ~p Error ~p", [PoolName, Transaction, Error])
-            end,
+            tt_prometheus:report_failed_write_for_resource_queue("retry_times", PoolName),
             {error, no_connection}
     end.
 
