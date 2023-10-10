@@ -51,7 +51,6 @@
 
 -include("eredis_cluster.hrl").
 
--define(RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result), lager:info("Debug - resource queue re-design cluster ~p command ~p error ~p", [Cluster, Command, Result])).
 -define(RESOURCE_QUEUE_REDESIGN_LOG_PREFIX, "Debug - resource queue re-design ").
 
 %% @doc Start application.
@@ -695,7 +694,7 @@ query(Cluster, Command, PoolKey, Counter) ->
 handle_redirects(Cluster, Command,
                  {error, <<"ASK ", RedirectInfo/binary>>} = Result, _Version) ->
     %% Simple command, simple result.
-    ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result),
+    resource_queue_redesign_log(Cluster, Command, Result),
     case parse_redirect_info(RedirectInfo) of
         {ok, Pool} ->
             AskingPipeline = [[<<"ASKING">>], Command],
@@ -712,7 +711,7 @@ handle_redirects(Cluster, Command,
 handle_redirects(Cluster, Command,
                  {error, <<"MOVED ", RedirectInfo/binary>>} = Result, Version) ->
     %% Simple command, simple result.
-    ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result),
+    resource_queue_redesign_log(Cluster, Command, Result),
     case parse_redirect_info(RedirectInfo) of
         {ok, Pool} ->
             eredis_cluster_monitor:async_refresh_mapping(Cluster, Version),
@@ -728,13 +727,13 @@ handle_redirects(Cluster, [[X|_]|_] = Command, Result, Version)
     %% errors in the result.
     {Redirects, OtherErrors} =
         lists:foldl(fun ({error, <<"MOVED ", _/binary>> = Redirect} = Res, {RedirectAcc, OtherAcc}) ->
-                            ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Res),
+                            resource_queue_redesign_log(Cluster, Command, Res),
                             {[Redirect|RedirectAcc], OtherAcc};
                         ({error, <<"ASK ", _/binary>> = Redirect} = Res, {RedirectAcc, OtherAcc}) ->
-                            ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Res),
+                            resource_queue_redesign_log(Cluster, Command, Res),
                             {[Redirect|RedirectAcc], OtherAcc};
                         ({error, Other} = Res, {RedirectAcc, OtherAcc}) ->
-                            ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Res),
+                            resource_queue_redesign_log(Cluster, Command, Res),
                             {RedirectAcc, [Other|OtherAcc]};
                         (_, Acc) ->
                             Acc
@@ -770,7 +769,7 @@ handle_redirects(_Cluster, _Command, {ok, _} = Result, _Version) ->
     Result;
 handle_redirects(Cluster, Command, Result, _Version) ->
     %% E.g. error result
-    ?RESOURCE_QUEUE_REDESIGN_LOG(Cluster, Command, Result),
+    resource_queue_redesign_log(Cluster, Command, Result),
     Result.
 
 %% If ASKING has been added to a pipeline command, remove the ASKING
@@ -1230,6 +1229,14 @@ reconnect(Cluster = memorydb_for_resource_queue, ConfigName) ->
     ok = connect(Cluster, InitNodes, [{pool_max_overflow, PoolMaxOverflow}, {pool_size, PoolSize}]);
 reconnect(_Cluster, _ConfigName) ->
        ok.
+
+resource_queue_redesign_log(Cluster, Command, Result) ->
+    case tt_feature_rollout:is_log_for_eredis_cluster_rolledout() of
+        true ->
+            lager:info("Debug - resource queue re-design cluster ~p command ~p error ~p", [Cluster, Command, Result]);
+        _ ->
+            ok
+    end.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
