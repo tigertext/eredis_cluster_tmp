@@ -19,7 +19,7 @@
 -export([start/2, stop/1]).
 
 %% Management
--export([connect/1, connect/2, connect/3, disconnect/1]).
+-export([connect/1, connect/2, connect/3, disconnect/1, reconnect/1]).
 
 %% Generic redis call (default cluster)
 -export([q/1, q1/2, qk/2, q_noreply/1, qp/1, qa/1, qa2/1, qn/2, qw/2, qmn/1]).
@@ -204,7 +204,7 @@ q1(Cluster, Command, Count) when Count > 0 ->
     catch
         exit:{noproc,_}:_Trace ->
             try
-                reconnect(Cluster, memorydb_for_resource_queue)
+                reconnect(Cluster)
             catch
                 _E:_R ->
                     ok
@@ -212,7 +212,7 @@ q1(Cluster, Command, Count) when Count > 0 ->
             q1(Cluster, Command, Count - 1);
         _Error:_Reason:_Trace ->
             try
-                reconnect(Cluster, memorydb_for_resource_queue)
+                reconnect(Cluster)
             catch
                 _E:_R ->
                     ok
@@ -661,7 +661,7 @@ query_noreply(Cluster, Command, PoolKey) ->
 
 query(Cluster, Command, _PoolKey, ?redis_cluster_request_max_retries) ->
     try
-        reconnect(Cluster, memorydb_for_resource_queue),
+        reconnect(Cluster),
         tt_prometheus:report_failed_write_for_resource_queue("write_failed_reach_max_times", Cluster)
     catch
         _E:_R ->
@@ -1221,13 +1221,14 @@ memory_arg([Subcommand | Args]) ->
         _Other  -> undefined
     end.
 
-reconnect(Cluster = memorydb_for_resource_queue, ConfigName) ->
-    {ok, Config} = application:get_env(ttserver, ConfigName),
+reconnect(Cluster) when Cluster == memorydb_for_resource_queue orelse
+                        Cluster == memorydb_for_message_db->
+    {ok, Config} = application:get_env(ttserver, Cluster),
     InitNodes = proplists:get_value(init_nodes, Config),
     PoolMaxOverflow = proplists:get_value(pool_max_overflow, Config),
     PoolSize = proplists:get_value(pool_size, Config),
     ok = connect(Cluster, InitNodes, [{pool_max_overflow, PoolMaxOverflow}, {pool_size, PoolSize}]);
-reconnect(_Cluster, _ConfigName) ->
+reconnect(_Cluster) ->
        ok.
 
 resource_queue_redesign_log(Cluster, Command, Result) ->
