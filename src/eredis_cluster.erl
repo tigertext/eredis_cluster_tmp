@@ -32,6 +32,7 @@
 %% Specific redis command implementation (default cluster)
 -export([flushdb/0, load_script/1, scan/4]).
 -export([eval/4]).
+-export([eval/5]).
 
 %% Convenience functions (default cluster)
 -export([update_key/2]).
@@ -1046,6 +1047,31 @@ eval(Script, ScriptHash, Keys, Args) ->
         {error, <<"NOSCRIPT", _/binary>>} ->
             LoadCommand = ["SCRIPT", "LOAD", Script],
             case qk([LoadCommand, EvalShaCommand], Key) of
+                [_LoadResult, EvalResult] -> EvalResult;
+                Result -> Result
+            end;
+        Result ->
+            Result
+    end.
+
+-spec eval(Cluster, Script, ScriptHash, Keys, Args) -> redis_result()
+              when Cluster    :: atom(),
+                   Script     :: anystring(),
+                   ScriptHash :: anystring(),
+                   Keys       :: [anystring()],
+                   Args       :: [anystring()].
+eval(Cluster, Script, ScriptHash, Keys, Args) ->
+    KeyNb = length(Keys),
+    EvalShaCommand = ["EVALSHA", ScriptHash, integer_to_binary(KeyNb)] ++ Keys ++ Args,
+    Key = if
+        KeyNb == 0 -> "A"; %Random key
+        true -> hd(Keys)
+    end,
+
+    case qk(Cluster, EvalShaCommand, Key) of
+        {error, <<"NOSCRIPT", _/binary>>} ->
+            LoadCommand = ["SCRIPT", "LOAD", Script],
+            case qk(Cluster, [LoadCommand, EvalShaCommand], Key) of
                 [_LoadResult, EvalResult] -> EvalResult;
                 Result -> Result
             end;
