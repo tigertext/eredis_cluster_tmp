@@ -19,7 +19,7 @@
 -export([start/2, stop/1]).
 
 %% Management
--export([connect/1, connect/2, connect/3, disconnect/1]).
+-export([connect/1, connect/2, connect/3, disconnect/1, reconnect/1]).
 
 %% Generic redis call (default cluster)
 -export([q/1, q1/2, qk/2, q_noreply/1, qp/1, qa/1, qa2/1, qn/2, qw/2, qmn/1]).
