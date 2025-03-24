@@ -620,7 +620,7 @@ split_by_pools(Cluster, Commands) ->
 split_by_pools([Command | T], Index, CmdAcc, MapAcc, State) ->
     Key = get_key_from_command(Command),
     Slot = get_key_slot(Key),
-    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
+    {Pool, _Version} = get_pool_for_command(Command, Slot, State),
     {NewAcc1, NewAcc2} =
         case lists:keyfind(Pool, 1, CmdAcc) of
             false ->
@@ -1236,6 +1236,34 @@ resource_queue_redesign_log(Cluster, Command, Result) ->
             lager:info("Debug - resource queue re-design cluster ~p command ~p error ~p", [Cluster, Command, Result]);
         _ ->
             ok
+    end.
+
+%% @doc Determine if a command is a read operation
+-spec is_read_command(Command :: redis_command()) -> boolean().
+is_read_command([Cmd | _]) when is_list(Cmd) ->
+    CmdStr = string:lowercase(Cmd),
+    lists:member(CmdStr, ?READ_COMMANDS);
+is_read_command(_) ->
+    false.
+
+%% @doc Get appropriate pool for a command based on operation type
+-spec get_pool_for_command(Command :: redis_command(), Slot :: integer(), State :: #state{}) ->
+    {PoolName :: atom(), Version :: integer()}.
+get_pool_for_command(Command, Slot, State) ->
+    case is_read_command(Command) of
+        true ->
+            %% For read operations, try to get a replica pool
+            ReplicaPools = eredis_cluster_monitor:get_replicas_for_slot(Slot, State),
+            case ReplicaPools of
+                [] ->
+                    %% If no replicas available, fall back to master
+                    eredis_cluster_monitor:get_pool_by_slot(Slot, State);
+                [Pool | _] ->
+                    {Pool, State#state.version}
+            end;
+        false ->
+            %% For write operations, always use master
+            eredis_cluster_monitor:get_pool_by_slot(Slot, State)
     end.
 
 -ifdef(TEST).

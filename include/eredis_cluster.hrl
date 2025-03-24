@@ -30,7 +30,8 @@
     address :: string(),
     port :: integer(),
     options :: options() | undefined,           % not used for init_nodes
-    pool :: atom()                              % not used for init_nodes
+    pool :: atom(),                             % not used for init_nodes
+    role :: master | replica                    % node role in the cluster
 }).
 
 -record(slots_map, {
@@ -114,3 +115,16 @@
 16#af,16#9b,16#bf,16#ba,16#8f,16#d9,16#9f,16#f8,
 16#6e,16#17,16#7e,16#36,16#4e,16#55,16#5e,16#74,
 16#2e,16#93,16#3e,16#b2,16#0e,16#d1,16#1e,16#f0>>).
+
+-type redis_command_type() :: read | write | admin.
+
+%% List of read-only commands that can be routed to replicas
+-define(READ_COMMANDS, [
+    "get", "mget", "exists", "type", "ttl", "pttl", "strlen",
+    "llen", "scard", "sismember", "srandmember", "zcard",
+    "zcount", "zlexcount", "zrange", "zrangebyscore", "zrank",
+    "zrevrange", "zrevrangebyscore", "zrevrank", "zscore",
+    "hget", "hgetall", "hexists", "hkeys", "hlen", "hmget",
+    "hvals", "lindex", "lrange", "llen", "randomkey", "keys",
+    "scan", "sscan", "hscan", "zscan"
+]).

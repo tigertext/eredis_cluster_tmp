@@ -535,3 +535,75 @@ terminate(_Reason, _State) ->
 %% @private
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+%% @doc Get all replica nodes for a given slot
+-spec get_replicas_for_slot(Slot :: integer()) -> [PoolName :: atom()].
+get_replicas_for_slot(Slot) ->
+    State = get_state(?default_cluster),
+    get_replicas_for_slot(Slot, State).
+
+-spec get_replicas_for_slot(Slot :: integer(), State :: #state{}) -> [PoolName :: atom()].
+get_replicas_for_slot(Slot, State) ->
+    try
+        [{_, Index}] = ets:lookup(State#state.slots_table, Slot),
+        SlotsMap = element(Index, State#state.slots_maps),
+        if
+            SlotsMap#slots_map.node =/= undefined ->
+                MasterNode = SlotsMap#slots_map.node,
+                %% Find all replica nodes for this master
+                lists:filtermap(
+                    fun(#slots_map{node = Node}) ->
+                        case Node#node.role of
+                            replica when Node#node.address =/= MasterNode#node.address ->
+                                {true, Node#node.pool};
+                            _ ->
+                                false
+                        end
+                    end,
+                    tuple_to_list(State#state.slots_maps)
+                );
+            true ->
+                []
+        end
+    catch
+        _:_ ->
+            []
+    end.
+
+%% @doc Parse node role from cluster nodes output
+-spec parse_node_role(Role :: binary()) -> master | replica.
+parse_node_role(Role) ->
+    case binary:split(Role, <<",">>, [global]) of
+        [<<"master">> | _] -> master;
+        [<<"slave">> | _] -> replica;
+        _ -> master  % Default to master if role is unclear
+    end.
+
+%% @doc Update node role in slots map
+-spec update_node_role(SlotsMap :: #slots_map{}, Role :: binary()) -> #slots_map{}.
+update_node_role(SlotsMap, Role) ->
+    Node = SlotsMap#slots_map.node,
+    SlotsMap#slots_map{node = Node#node{role = parse_node_role(Role)}}.
+
+%% @doc Parse cluster nodes output and update node roles
+-spec parse_cluster_nodes(Nodes :: binary(), Options :: options()) -> [#node{}].
+parse_cluster_nodes(Nodes, Options) ->
+    NodeLines = binary:split(Nodes, <<"\n">>, [global]),
+    lists:filtermap(
+        fun(Line) ->
+            case binary:split(Line, <<" ">>, [global]) of
+                [NodeId, IpPort, Flags, MasterId | _] ->
+                    [Ip, Port] = binary:split(IpPort, <<":">>),
+                    Node = #node{
+                        address = binary_to_list(Ip),
+                        port = binary_to_integer(Port),
+                        options = Options,
+                        pool = list_to_atom("eredis_cluster_pool_" ++ binary_to_list(NodeId))
+                    },
+                    {true, update_node_role(Node, Flags)};
+                _ ->
+                    false
+            end
+        end,
+        NodeLines
+    ).
