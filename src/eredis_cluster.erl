@@ -1247,7 +1247,7 @@ is_read_command(_) ->
     false.
 
 %% @doc Get appropriate pool for a command based on operation type
--spec get_pool_for_command(Command :: redis_command(), Slot :: integer(), State :: #state{}) ->
+-spec get_pool_for_command(Command :: redis_command(), Slot :: integer(), State :: term()) ->
     {PoolName :: atom(), Version :: integer()}.
 get_pool_for_command(Command, Slot, State) ->
     case is_read_command(Command) of
@@ -1259,7 +1259,7 @@ get_pool_for_command(Command, Slot, State) ->
                     %% If no replicas available, fall back to master
                     eredis_cluster_monitor:get_pool_by_slot(Slot, State);
                 [Pool | _] ->
-                    {Pool, State#state.version}
+                    {Pool, eredis_cluster_monitor:get_state_version(State)}
             end;
         false ->
             %% For write operations, always use master
