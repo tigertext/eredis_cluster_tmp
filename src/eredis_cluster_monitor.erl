@@ -16,6 +16,7 @@
 -export([get_pool_by_slot/1, get_pool_by_slot/2]).
 -export([get_all_pools/0, get_all_pools/1]).
 -export([get_cluster_slots/1, get_cluster_nodes/1]).
+-export([get_replicas_for_slot/1, get_replicas_for_slot/2]).
 
 %% Public API (backward compat).
 -export([get_cluster_slots/0, get_cluster_nodes/0]).
@@ -542,7 +543,7 @@ get_replicas_for_slot(Slot) ->
     State = get_state(?default_cluster),
     get_replicas_for_slot(Slot, State).
 
--spec get_replicas_for_slot(Slot :: integer(), State :: #state{}) -> [PoolName :: atom()].
+-spec get_replicas_for_slot(Slot :: integer(), State :: term()) -> [PoolName :: atom()].
 get_replicas_for_slot(Slot, State) ->
     try
         [{_, Index}] = ets:lookup(State#state.slots_table, Slot),
