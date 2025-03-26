@@ -380,19 +380,22 @@ parse_cluster_slots([[StartSlot, EndSlot | [[Address, Port | _] | Replicas]] | T
     },
     
     %% Create replica nodes
-    ReplicaSlotsMaps = lists:map(fun([RAddress, RPort | _], RIndex) ->
-        ReplicaNode = #node{
-            address = binary_to_list(RAddress),
-            port = binary_to_integer(RPort),
-            role = replica
-        },
-        #slots_map{
-            index = RIndex,
-            start_slot = binary_to_integer(StartSlot),
-            end_slot = binary_to_integer(EndSlot),
-            node = ReplicaNode
-        }
-    end, Replicas, lists:seq(Index + 1, Index + length(Replicas))),
+    ReplicaSlotsMaps = lists:map(
+        fun({[RAddress, RPort | _], RIndex}) ->
+            ReplicaNode = #node{
+                address = binary_to_list(RAddress),
+                port = binary_to_integer(RPort),
+                role = replica
+            },
+            #slots_map{
+                index = RIndex,
+                start_slot = binary_to_integer(StartSlot),
+                end_slot = binary_to_integer(EndSlot),
+                node = ReplicaNode
+            }
+        end,
+        lists:zip(Replicas, lists:seq(Index + 1, Index + length(Replicas)))
+    ),
     
     parse_cluster_slots(T, Index + length(Replicas) + 1, [MasterSlotsMap | ReplicaSlotsMaps] ++ Acc);
 parse_cluster_slots([], _Index, Acc) ->
