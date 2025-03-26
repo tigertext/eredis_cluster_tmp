@@ -1221,8 +1221,7 @@ memory_arg([Subcommand | Args]) ->
         _Other  -> undefined
     end.
 
-reconnect(Cluster) when Cluster == memorydb_for_resource_queue orelse
-                        Cluster == memorydb_for_message_db->
+reconnect(Cluster) when is_atom(Cluster) ->
     {ok, Config} = application:get_env(ttserver, Cluster),
     InitNodes = proplists:get_value(init_nodes, Config),
     PoolMaxOverflow = proplists:get_value(pool_max_overflow, Config),
