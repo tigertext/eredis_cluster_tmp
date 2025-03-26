@@ -80,19 +80,29 @@ get_state(Cluster) ->
 get_state_version(State) ->
     State#state.version.
 
-%% @private
+%% @doc Returns the connection pools for all Redis nodes in the default cluster.
+%%
+%% This is useful for commands to a specific node using `qn/2' and
+%% `transaction/2'.
+%% @see qn/2
+%% @see transaction/2
+%% @end
+%% =============================================================================
 -spec get_all_pools() -> [atom()].
 get_all_pools() ->
     get_all_pools(?default_cluster).
 
-%% @private
--spec get_all_pools(atom() | #state{}) -> [atom()].
-get_all_pools(Cluster) when is_atom(Cluster) ->
-    get_all_pools(get_state(Cluster));
-get_all_pools(#state{slots_maps = SlotsMaps}) ->
-    SlotsMapList = tuple_to_list(SlotsMaps),
-    lists:usort([SlotsMap#slots_map.node#node.pool || SlotsMap <- SlotsMapList,
-                    SlotsMap#slots_map.node =/= undefined]).
+%% @doc Returns the connection pools for all Redis nodes in a named cluster.
+-spec get_all_pools(Cluster :: atom()) -> [atom()].
+get_all_pools(Cluster) ->
+    State = get_state(Cluster),
+    SlotsMaps = tuple_to_list(State#state.slots_maps),
+    %% Get all unique pools from both master and replica nodes
+    lists:usort([Node#node.pool || 
+                    SlotsMap <- SlotsMaps,
+                    Node <- [SlotsMap#slots_map.node],
+                    Node =/= undefined,
+                    Node#node.pool =/= undefined]).
 
 %% =============================================================================
 %% @private

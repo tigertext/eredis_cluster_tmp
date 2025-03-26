@@ -1214,7 +1214,7 @@ arg_after_keyword(Keyword, [Arg|Args]) ->
     end.
 
 memory_arg([Subcommand | Args]) when is_binary(Subcommand) ->
-    memory_arg([binary_to_list(Subcommand) | Args]);
+    memory_arg([binary_to_list(Subcommand)|Args]);
 memory_arg([Subcommand | Args]) ->
     case string:to_lower(Subcommand) of
         "usage" -> nth_arg(1, Args);
@@ -1257,13 +1257,18 @@ get_pool_for_command(Command, Slot, State) ->
             case ReplicaPools of
                 [] ->
                     %% If no replicas available, fall back to master
-                    eredis_cluster_monitor:get_pool_by_slot(Slot, State);
+                    {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
+                    lager:debug("Read command ~p routed to master node ~p (no replicas available)", [Command, Pool]),
+                    {Pool, Version};
                 [Pool | _] ->
+                    lager:debug("Read command ~p routed to replica node ~p", [Command, Pool]),
                     {Pool, eredis_cluster_monitor:get_state_version(State)}
             end;
         false ->
             %% For write operations, always use master
-            eredis_cluster_monitor:get_pool_by_slot(Slot, State)
+            {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
+            lager:debug("Write command ~p routed to master node ~p", [Command, Pool]),
+            {Pool, Version}
     end.
 
 -ifdef(TEST).
