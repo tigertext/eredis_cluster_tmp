@@ -365,18 +365,36 @@ parse_cluster_slots(ClusterInfo, Options) ->
     [SlotsMap#slots_map{node=SlotsMap#slots_map.node#node{options = Options}} ||
                        SlotsMap <- SlotsMaps].
 
-parse_cluster_slots([[StartSlot, EndSlot | [[Address, Port | _] | _]] | T], Index, Acc) ->
-    SlotsMap =
+parse_cluster_slots([[StartSlot, EndSlot | [[Address, Port | _] | Replicas]] | T], Index, Acc) ->
+    %% Create master node
+    MasterNode = #node{
+        address = binary_to_list(Address),
+        port = binary_to_integer(Port),
+        role = master
+    },
+    MasterSlotsMap = #slots_map{
+        index = Index,
+        start_slot = binary_to_integer(StartSlot),
+        end_slot = binary_to_integer(EndSlot),
+        node = MasterNode
+    },
+    
+    %% Create replica nodes
+    ReplicaSlotsMaps = lists:map(fun([RAddress, RPort | _], RIndex) ->
+        ReplicaNode = #node{
+            address = binary_to_list(RAddress),
+            port = binary_to_integer(RPort),
+            role = replica
+        },
         #slots_map{
-            index = Index,
+            index = RIndex,
             start_slot = binary_to_integer(StartSlot),
             end_slot = binary_to_integer(EndSlot),
-            node = #node{
-                address = binary_to_list(Address),
-                port = binary_to_integer(Port)
-            }
-        },
-    parse_cluster_slots(T, Index + 1, [SlotsMap | Acc]);
+            node = ReplicaNode
+        }
+    end, Replicas, lists:seq(Index + 1, Index + length(Replicas))),
+    
+    parse_cluster_slots(T, Index + length(Replicas) + 1, [MasterSlotsMap | ReplicaSlotsMaps] ++ Acc);
 parse_cluster_slots([], _Index, Acc) ->
     lists:reverse(Acc).
 
@@ -457,10 +475,8 @@ connect_all_slots(PoolSup, SlotsMapList) ->
                                             SlotsMap#slots_map.node)} ||
         SlotsMap <- SlotsMapList].
 
--spec connect_([{Address :: string(), Port :: integer()}],
+-spec connect_(InitNodes :: [{Address :: string(), Port :: integer()}],
                Options :: options(), State :: #state{}) -> #state{}.
-connect_([], _Options, State) ->
-    State;
 connect_(InitNodes, Options, State) ->
     NewState = State#state{
         init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes],
