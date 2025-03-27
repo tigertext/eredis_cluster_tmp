@@ -482,34 +482,69 @@ connect_all_slots(PoolSup, SlotsMapList) ->
         SlotsMap <- SlotsMapList].
 
 -spec connect_(InitNodes :: [{Address :: string(), Port :: integer()}],
-               Options :: options(), State :: #state{}) -> #state{}.
+                 Options :: options(), State :: #state{}) -> #state{}.
 connect_(InitNodes, Options, State) ->
-    NewState = State#state{
-        init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes],
-        node_options = Options
-    },
+    lager:debug("Attempting to connect to Redis cluster with nodes: ~p and options: ~p", [InitNodes, Options]),
+    case get_cluster_info_from_init_nodes(InitNodes, Options) of
+        {ok, ClusterInfo} ->
+            lager:debug("Successfully got cluster info: ~p", [ClusterInfo]),
+            NewState = State#state{
+                cluster_info = ClusterInfo,
+                options = Options
+            },
+            reload_slots_map(NewState);
+        {error, Reason} ->
+            lager:error("Failed to get cluster info: ~p", [Reason]),
+            throw({reply, {error, {cannot_connect_to_cluster, Reason}}, State})
+    end.
 
-    reload_slots_map(NewState).
+-spec get_cluster_info_from_init_nodes([{string(), integer()}], options()) ->
+    {ok, cluster_info()} | {error, term()}.
+get_cluster_info_from_init_nodes(InitNodes, Options) ->
+    lager:debug("Attempting to connect to init nodes: ~p with options: ~p", [InitNodes, Options]),
+    case connect_to_init_nodes(InitNodes, Options) of
+        {ok, Connection} ->
+            try
+                lager:debug("Successfully connected to init node, getting cluster info"),
+                ClusterInfo = get_cluster_info_from_connection(Connection),
+                eredis:q(Connection, ["QUIT"]),
+                {ok, ClusterInfo}
+            catch
+                _:Reason ->
+                    lager:error("Failed to get cluster info: ~p", [Reason]),
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            lager:error("Failed to connect to init nodes: ~p", [Reason]),
+            {error, Reason}
+    end.
 
--spec disconnect_(PoolNodes :: [atom()], State :: #state{}) -> #state{}.
-disconnect_([], State) ->
-    State;
-disconnect_(PoolNodes, State) ->
-    SlotsMaps = tuple_to_list(State#state.slots_maps),
-    PoolSup = State#state.pool_sup,
-    Cluster = this_cluster(),
+-spec connect_to_init_nodes([{string(), integer()}], options()) ->
+    {ok, connection()} | {error, term()}.
+connect_to_init_nodes([], _Options) ->
+    {error, no_init_nodes};
+connect_to_init_nodes([{Address, Port} | Rest], Options) ->
+    lager:debug("Attempting to connect to node ~p:~p with options: ~p", [Address, Port, Options]),
+    case eredis:start_link(Address, Port, Options) of
+        {ok, Connection} ->
+            lager:debug("Successfully connected to node ~p:~p", [Address, Port]),
+            {ok, Connection};
+        {error, Reason} ->
+            lager:error("Failed to connect to node ~p:~p: ~p", [Address, Port, Reason]),
+            connect_to_init_nodes(Rest, Options)
+    end.
 
-    NewSlotsMaps = close_connection_with_nodes(PoolSup, SlotsMaps, PoolNodes),
-    ConnectedSlotsMaps = connect_all_slots(PoolSup, NewSlotsMaps),
-    create_slots_cache(State#state.slots_table, ConnectedSlotsMaps),
-
-    NewState = State#state{
-                 slots_maps = list_to_tuple(ConnectedSlotsMaps),
-                 version = State#state.version + 1
-                },
-    true = ets:insert(?cluster_state_table(Cluster),
-                      [{cluster_state, NewState}]),
-    NewState.
+-spec get_cluster_info_from_connection(connection()) -> cluster_info().
+get_cluster_info_from_connection(Connection) ->
+    lager:debug("Getting cluster info from connection"),
+    {ok, ClusterNodes} = eredis:q(Connection, ["CLUSTER", "NODES"]),
+    lager:debug("Got cluster nodes: ~p", [ClusterNodes]),
+    {ok, ClusterSlots} = eredis:q(Connection, ["CLUSTER", "SLOTS"]),
+    lager:debug("Got cluster slots: ~p", [ClusterSlots]),
+    #cluster_info{
+        nodes = parse_cluster_nodes(ClusterNodes),
+        slots = parse_cluster_slots(ClusterSlots, [])
+    }.
 
 %% Returns the name of the cluster handled by the current monitor process
 this_cluster() ->
