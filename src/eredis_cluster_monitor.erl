@@ -547,14 +547,30 @@ connect_to_init_nodes([{Address, Port} | Rest], Options) ->
 -spec get_cluster_info_from_connection(connection()) -> cluster_info().
 get_cluster_info_from_connection(Connection) ->
     lager:debug("Getting cluster info from connection"),
-    {ok, ClusterNodes} = eredis:q(Connection, ["CLUSTER", "NODES"]),
-    lager:debug("Got cluster nodes: ~p", [ClusterNodes]),
-    {ok, ClusterSlots} = eredis:q(Connection, ["CLUSTER", "SLOTS"]),
-    lager:debug("Got cluster slots: ~p", [ClusterSlots]),
-    #cluster_info{
-        nodes = parse_cluster_nodes(ClusterNodes),
-        slots = parse_cluster_slots(ClusterSlots, [])
-    }.
+    case eredis:q(Connection, ["CLUSTER", "NODES"]) of
+        {ok, ClusterNodes} ->
+            lager:debug("Got cluster nodes: ~p", [ClusterNodes]),
+            case eredis:q(Connection, ["CLUSTER", "SLOTS"]) of
+                {ok, ClusterSlots} ->
+                    lager:debug("Got cluster slots: ~p", [ClusterSlots]),
+                    #cluster_info{
+                        nodes = parse_cluster_nodes(ClusterNodes),
+                        slots = parse_cluster_slots(ClusterSlots, [])
+                    };
+                {error, Reason} ->
+                    lager:error("Failed to get cluster slots: ~p", [Reason]),
+                    throw({error, Reason});
+                Other ->
+                    lager:error("Unexpected response from CLUSTER SLOTS: ~p", [Other]),
+                    throw({error, unexpected_response})
+            end;
+        {error, Reason} ->
+            lager:error("Failed to get cluster nodes: ~p", [Reason]),
+            throw({error, Reason});
+        Other ->
+            lager:error("Unexpected response from CLUSTER NODES: ~p", [Other]),
+            throw({error, unexpected_response})
+    end.
 
 %% Returns the name of the cluster handled by the current monitor process
 this_cluster() ->
