@@ -705,10 +705,10 @@ parse_cluster_nodes(Nodes) ->
         fun(Line) ->
             case binary:split(Line, <<" ">>, [global]) of
                 [NodeId, IpPort, Flags, _MasterId | _] ->
-                    [Ip, Port] = binary:split(IpPort, <<":">>),
+                    [Ip, _Port] = binary:split(IpPort, <<":">>),
                     Node = #node{
                         address = binary_to_list(Ip),
-                        port = binary_to_integer(Port),
+                        port = 6379,  % Default port since it's not in the address
                         role = parse_node_role(Flags),
                         pool = list_to_atom("eredis_cluster_pool_" ++ binary_to_list(NodeId))
                     },
