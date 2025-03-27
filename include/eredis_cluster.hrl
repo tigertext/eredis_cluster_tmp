@@ -29,16 +29,29 @@
 -record(node, {
     address :: string(),
     port :: integer(),
-    options :: options() | undefined,           % not used for init_nodes
-    pool :: atom(),                             % not used for init_nodes
-    role :: master | replica                    % node role in the cluster
+    role :: master | replica,
+    options = [] :: options()
 }).
 
 -record(slots_map, {
+    index :: integer(),
     start_slot :: integer(),
     end_slot :: integer(),
-    index :: integer(),
     node :: #node{}
+}).
+
+-record(cluster_info, {
+    nodes :: [#node{}],
+    slots :: [#slots_map{}]
+}).
+
+-record(state, {
+    slots_maps = {} :: tuple(),
+    slots_table :: ets:tid(),
+    pool_sup :: pid(),
+    version = 0 :: integer(),
+    cluster_info :: #cluster_info{},
+    options = [] :: options()
 }).
 
 -define(default_cluster, eredis_cluster_default).
@@ -128,3 +141,6 @@
     "hvals", "lindex", "lrange", "llen", "randomkey", "keys",
     "scan", "sscan", "hscan", "zscan"
 ]).
+
+-type connection() :: pid().
+-type cluster_info() :: #cluster_info{}.

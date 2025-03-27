@@ -683,3 +683,23 @@ parse_cluster_nodes(Nodes, Options) ->
         end,
         NodeLines
     ).
+
+-spec disconnect_(PoolNodes :: [atom()], State :: #state{}) -> #state{}.
+disconnect_([], State) ->
+    State;
+disconnect_(PoolNodes, State) ->
+    SlotsMaps = tuple_to_list(State#state.slots_maps),
+    PoolSup = State#state.pool_sup,
+    Cluster = this_cluster(),
+
+    NewSlotsMaps = close_connection_with_nodes(PoolSup, SlotsMaps, PoolNodes),
+    ConnectedSlotsMaps = connect_all_slots(PoolSup, NewSlotsMaps),
+    create_slots_cache(State#state.slots_table, ConnectedSlotsMaps),
+
+    NewState = State#state{
+                 slots_maps = list_to_tuple(ConnectedSlotsMaps),
+                 version = State#state.version + 1
+                },
+    true = ets:insert(?cluster_state_table(Cluster),
+                      [{cluster_state, NewState}]),
+    NewState.
