@@ -345,19 +345,19 @@ get_cluster_info_from_connection(Connection) ->
                             nodes = parse_cluster_nodes(ClusterNodes),
                             slots = parse_cluster_slots(ClusterSlots, [])
                         };
-                    {error, Error} ->
-                        lager:error("Failed to get cluster slots: ~p", [Error]),
+                    {error, SlotsError} ->
+                        lager:error("Failed to get cluster slots: ~p", [SlotsError]),
                         eredis:stop(Connection),
-                        throw({error, Error});
+                        throw({error, SlotsError});
                     Other ->
                         lager:error("Unexpected response from CLUSTER SLOTS: ~p", [Other]),
                         eredis:stop(Connection),
                         throw({error, unexpected_response})
                 end;
-            {error, Error} ->
-                lager:error("Failed to get cluster nodes: ~p", [Error]),
+            {error, NodesError} ->
+                lager:error("Failed to get cluster nodes: ~p", [NodesError]),
                 eredis:stop(Connection),
-                throw({error, Error});
+                throw({error, NodesError});
             Other ->
                 lager:error("Unexpected response from CLUSTER NODES: ~p", [Other]),
                 eredis:stop(Connection),
