@@ -533,7 +533,15 @@ handle_call({reload_slots_map, _}, _From, State) ->
     %% Mismatching version. Slots map already reloaded.
     {reply, ok, State};
 handle_call({connect, InitServers, Options}, _From, State) ->
-    {reply, ok, connect_(InitServers, Options, State)};
+    try connect_(InitServers, Options, State) of
+        NewState ->
+            {reply, ok, NewState}
+    catch
+        {reply, {error, Reason}, _} ->
+            {reply, {error, Reason}, State};
+        _:Reason ->
+            {reply, {error, Reason}, State}
+    end;
 handle_call({disconnect, PoolNodes}, _From, State) ->
     {reply, ok, disconnect_(PoolNodes, State)};
 handle_call(_Request, _From, State) ->
