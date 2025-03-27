@@ -539,7 +539,6 @@ get_cluster_info_from_init_nodes(InitNodes, Options) ->
             try
                 lager:debug("Successfully connected to init node, getting cluster info"),
                 ClusterInfo = get_cluster_info_from_connection(Connection),
-                eredis:q(Connection, ["QUIT"]),
                 {ok, ClusterInfo}
             catch
                 _:Reason ->
