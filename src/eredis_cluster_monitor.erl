@@ -419,13 +419,19 @@ close_connection(PoolSup, SlotsMap) ->
 
 -spec connect_node(pid(), #node{}) -> #node{} | undefined.
 connect_node(PoolSup, Node) ->
+    lager:info("~p:connect_node - Attempting to connect to node at ~p:~p with options ~p", 
+               [?MODULE, Node#node.address, Node#node.port, Node#node.options]),
     case eredis_cluster_pool:create(PoolSup,
                                     Node#node.address,
                                     Node#node.port,
                                     Node#node.options) of
         {ok, Pool} ->
+            lager:info("~p:connect_node - Successfully created pool ~p for node at ~p:~p", 
+                      [?MODULE, Pool, Node#node.address, Node#node.port]),
             Node#node{pool=Pool};
-        _ ->
+        Error ->
+            lager:error("~p:connect_node - Failed to create pool for node at ~p:~p: ~p", 
+                       [?MODULE, Node#node.address, Node#node.port, Error]),
             undefined
     end.
 
@@ -446,9 +452,15 @@ create_slots_cache(SlotsTable, SlotsMaps) ->
 
 -spec connect_all_slots(pid(), [#slots_map{}]) -> [#slots_map{}].
 connect_all_slots(PoolSup, SlotsMapList) ->
-    [SlotsMap#slots_map{node = connect_node(PoolSup,
+    lager:info("~p:connect_all_slots - Starting connection to ~p slots", 
+               [?MODULE, length(SlotsMapList)]),
+    Result = [SlotsMap#slots_map{node = connect_node(PoolSup,
                                             SlotsMap#slots_map.node)} ||
-        SlotsMap <- SlotsMapList].
+        SlotsMap <- SlotsMapList],
+    ConnectedCount = length([S || S <- Result, S#slots_map.node =/= undefined]),
+    lager:info("~p:connect_all_slots - Connected to ~p out of ~p slots", 
+               [?MODULE, ConnectedCount, length(SlotsMapList)]),
+    Result.
 
 -spec connect_([{Address :: string(), Port :: integer()}],
                Options :: options(), State :: #state{}) -> #state{}.
@@ -508,8 +520,10 @@ this_cluster() ->
 
 %% @private
 init(Cluster) ->
+    lager:info("~p:init - Starting initialization for cluster ~p", [?MODULE, Cluster]),
     ets:new(Cluster, [protected, set, named_table, {read_concurrency, true}]),
     SlotsTab = ets:new(slots, [protected, set, {read_concurrency, true}]),
+    lager:info("~p:init - Created ETS tables for cluster ~p", [?MODULE, Cluster]),
     gen_server:cast(self(), {async_init, Cluster}),
     {ok, #state{slots_table = SlotsTab}}.
 
@@ -528,12 +542,19 @@ handle_call(_Request, _From, State) ->
 
 %% @private
 handle_cast({async_init, Cluster}, State) ->
+    lager:info("~p:handle_cast - Starting async initialization for cluster ~p", 
+               [?MODULE, Cluster]),
     {ok, ClusterSup} = eredis_cluster_sup_sup:lookup_cluster(Cluster),
     PoolSup = eredis_cluster_sup:get_pool_sup(ClusterSup),
     InitNodes = case Cluster of
                     ?default_cluster ->
-                        application:get_env(eredis_cluster, init_nodes, []);
+                        Nodes = application:get_env(eredis_cluster, init_nodes, []),
+                        lager:info("~p:handle_cast - Using default cluster init nodes: ~p", 
+                                 [?MODULE, Nodes]),
+                        Nodes;
                     _Other  ->
+                        lager:info("~p:handle_cast - Using empty init nodes for non-default cluster", 
+                                 [?MODULE]),
                         []
                 end,
 
