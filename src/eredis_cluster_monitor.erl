@@ -266,8 +266,8 @@ get_cluster_info_from_existing_pools(SlotMaps, Options, Query, FailFn, SlotMapIt
                     Error ->
                         {error, Error}
                 catch
-                    _:Error ->
-                        {error, Error}
+                    _:CatchError ->
+                        {error, CatchError}
                 end
             end,
             try
