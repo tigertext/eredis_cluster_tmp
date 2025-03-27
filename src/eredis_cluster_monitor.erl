@@ -521,15 +521,26 @@ get_cluster_info_from_init_nodes(InitNodes, Options) ->
 -spec connect_to_init_nodes([{string(), integer()}], options()) ->
     {ok, connection()} | {error, term()}.
 connect_to_init_nodes([], _Options) ->
+    lager:error("No init nodes provided"),
     {error, no_init_nodes};
 connect_to_init_nodes([{Address, Port} | Rest], Options) ->
     lager:debug("Attempting to connect to node ~p:~p with options: ~p", [Address, Port, Options]),
-    case eredis:start_link(Address, Port, Options) of
+    try eredis:start_link(Address, Port, Options) of
         {ok, Connection} ->
             lager:debug("Successfully connected to node ~p:~p", [Address, Port]),
             {ok, Connection};
         {error, Reason} ->
             lager:error("Failed to connect to node ~p:~p: ~p", [Address, Port, Reason]),
+            connect_to_init_nodes(Rest, Options)
+    catch
+        error:Reason ->
+            lager:error("Error connecting to node ~p:~p: ~p", [Address, Port, Reason]),
+            connect_to_init_nodes(Rest, Options);
+        exit:Reason ->
+            lager:error("Exit while connecting to node ~p:~p: ~p", [Address, Port, Reason]),
+            connect_to_init_nodes(Rest, Options);
+        throw:Reason ->
+            lager:error("Throw while connecting to node ~p:~p: ~p", [Address, Port, Reason]),
             connect_to_init_nodes(Rest, Options)
     end.
 
