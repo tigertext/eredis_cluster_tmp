@@ -32,15 +32,6 @@
 %% Type definition.
 -include("eredis_cluster.hrl").
 
--record(state, {
-    init_nodes   = [] :: [#node{}],
-    slots_maps   = {} :: tuple(), %% whose elements are #slots_map{}
-    node_options = [] :: options(),
-    version      = 0  :: integer(),
-    slots_table       :: ets:tid() | undefined,
-    pool_sup          :: pid() | undefined
-}).
-
 -define(cluster_state_table(Cluster), Cluster).
 -define(cluster_process(Cluster), Cluster).
 
