@@ -51,7 +51,11 @@ start_link(Cluster) ->
 
 %% @private
 connect(Cluster, InitServers, Options) ->
-    gen_server:call(?cluster_process(Cluster), {connect, InitServers, Options}).
+    lager:info("~p:connect - Starting connection to cluster ~p with init servers ~p and options ~p", 
+               [?MODULE, Cluster, InitServers, Options]),
+    Result = gen_server:call(?cluster_process(Cluster), {connect, InitServers, Options}),
+    lager:info("~p:connect - Connection result: ~p", [?MODULE, Result]),
+    Result.
 
 %% @private
 disconnect(Cluster, PoolNodes) ->
@@ -448,15 +452,31 @@ connect_all_slots(PoolSup, SlotsMapList) ->
 
 -spec connect_([{Address :: string(), Port :: integer()}],
                Options :: options(), State :: #state{}) -> #state{}.
-connect_([], _Options, State) ->
+connect_([], Options, State) ->
+    lager:warning("~p:connect_ - No init servers provided for connection", [?MODULE]),
     State;
 connect_(InitNodes, Options, State) ->
+    lager:info("~p:connect_ - Connecting to init nodes: ~p with options: ~p", 
+               [?MODULE, InitNodes, Options]),
+    
     NewState = State#state{
         init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes],
         node_options = Options
     },
 
-    reload_slots_map(NewState).
+    lager:info("~p:connect_ - Created new state with init nodes: ~p", 
+               [?MODULE, NewState#state.init_nodes]),
+    
+    try
+        Result = reload_slots_map(NewState),
+        lager:info("~p:connect_ - Successfully reloaded slots map", [?MODULE]),
+        Result
+    catch
+        Error:Reason ->
+            lager:error("~p:connect_ - Failed to reload slots map: ~p:~p", 
+                       [?MODULE, Error, Reason]),
+            NewState
+    end.
 
 -spec disconnect_(PoolNodes :: [atom()], State :: #state{}) -> #state{}.
 disconnect_([], State) ->
