@@ -319,15 +319,15 @@ get_cluster_info_from_init_nodes([Node|Nodes], Options, Query, FailFn, ErrorList
             try get_cluster_info_from_connection(Connection) of
                 {ok, Result} ->
                     Result;
-                Error ->
+                QueryError ->
                     get_cluster_info_from_init_nodes(Nodes, Options, Query, FailFn,
-                                                     [{Node, Error} | ErrorList])
+                                                     [{Node, QueryError} | ErrorList])
             after
                 eredis:stop(Connection)
             end;
-        Error ->
+        ConnectError ->
             get_cluster_info_from_init_nodes(Nodes, Options, Query, FailFn,
-                                             [{Node, Error} | ErrorList])
+                                             [{Node, ConnectError} | ErrorList])
     end.
 
 -spec get_cluster_info_from_connection(connection()) -> cluster_info().
