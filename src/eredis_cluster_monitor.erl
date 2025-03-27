@@ -127,16 +127,22 @@ get_pool_by_slot(Slot, State) ->
     end.
 
 %% =============================================================================
-%% @doc Connect to a init node and get the slot distribution of nodes.
+%% @doc Connect to an init node and get the slot distribution of nodes.
 %% @end
 %% =============================================================================
 -spec reload_slots_map(State::#state{}) -> NewState::#state{}.
 reload_slots_map(State) ->
+    lager:info("~p:reload_slots_map - Starting to reload slots map for cluster", [?MODULE]),
     OldSlotsMaps = tuple_to_list(State#state.slots_maps),
+    lager:info("~p:reload_slots_map - Current slots maps: ~p", [?MODULE, OldSlotsMaps]),
 
     Options = get_current_options(State),
     ClusterSlots = get_cluster_slots(State, Options),
+    lager:info("~p:reload_slots_map - Retrieved cluster slots from Redis: ~p", [?MODULE, ClusterSlots]),
+    
     NewSlotsMaps = parse_cluster_slots(ClusterSlots, Options),
+    lager:info("~p:reload_slots_map - Parsed new slots maps: ~p", [?MODULE, NewSlotsMaps]),
+    
     %% Find old slots_maps with nodes still in use.
     CommonInOldMap = lists:flatmap(
                        fun(#slots_map{node = Node} = OldElem) ->
@@ -145,9 +151,13 @@ reload_slots_map(State) ->
                                            Elem#slots_map.node#node.port    == Node#node.port,
                                            Elem#slots_map.node#node.options == Node#node.options]
                        end, OldSlotsMaps),
+    lager:info("~p:reload_slots_map - Found ~p common slots maps to keep", 
+               [?MODULE, length(CommonInOldMap)]),
 
     %% Disconnect non-used nodes
     RemovedFromOldMap = remove_list_elements(OldSlotsMaps, CommonInOldMap),
+    lager:info("~p:reload_slots_map - Disconnecting ~p old slots maps", 
+               [?MODULE, length(RemovedFromOldMap)]),
     PoolSup = State#state.pool_sup,
     [close_connection(PoolSup, SlotsMap) || SlotsMap <- RemovedFromOldMap],
 
@@ -162,7 +172,7 @@ reload_slots_map(State) ->
     Cluster = this_cluster(),
     true = ets:insert(?cluster_state_table(Cluster),
                       [{cluster_state, NewState}]),
-                      
+    lager:info("~p:reload_slots_map - Successfully updated cluster state with new slots map", [?MODULE]),
     NewState.
 
 %% =============================================================================
@@ -194,7 +204,11 @@ get_cluster_slots(Cluster) ->
 get_cluster_slots(State, Options) ->
     Query = ["CLUSTER", "SLOTS"],
     FailFn = fun get_cluster_slots_from_single_node/1,
-    get_cluster_info(State, Options, Query, FailFn).
+    lager:info("~p:get_cluster_slots - Querying Redis for cluster slots with options: ~p", 
+               [?MODULE, Options]),
+    Result = get_cluster_info(State, Options, Query, FailFn),
+    lager:info("~p:get_cluster_slots - Got cluster slots result: ~p", [?MODULE, Result]),
+    Result.
 
 %% =============================================================================
 %% @doc Get cluster nodes information.
@@ -353,12 +367,19 @@ get_cluster_slots_from_single_node(Node) ->
 -spec parse_cluster_slots(ClusterInfo::[[bitstring() | [bitstring()]]],
                           Options::options()) -> [#slots_map{}].
 parse_cluster_slots(ClusterInfo, Options) ->
+    lager:info("~p:parse_cluster_slots - Parsing cluster info with ~p slots", 
+               [?MODULE, length(ClusterInfo)]),
     SlotsMaps = parse_cluster_slots(ClusterInfo, 1, []),
     %% Save current options in each new SlotsMaps
-    [SlotsMap#slots_map{node=SlotsMap#slots_map.node#node{options = Options}} ||
-                       SlotsMap <- SlotsMaps].
+    Result = [SlotsMap#slots_map{node=SlotsMap#slots_map.node#node{options = Options}} ||
+                       SlotsMap <- SlotsMaps],
+    lager:info("~p:parse_cluster_slots - Created ~p slots maps with options", 
+               [?MODULE, length(Result)]),
+    Result.
 
 parse_cluster_slots([[StartSlot, EndSlot | [[Address, Port | _] | _]] | T], Index, Acc) ->
+    lager:debug("~p:parse_cluster_slots - Processing slot range ~p-~p for node ~p:~p", 
+                [?MODULE, StartSlot, EndSlot, Address, Port]),
     SlotsMap =
         #slots_map{
             index = Index,
