@@ -666,10 +666,11 @@ get_replicas_for_slot(Slot, State) ->
     end.
 
 %% @doc Parse node role from cluster nodes output
--spec parse_node_role(Role :: binary()) -> master | replica.
-parse_node_role(Role) ->
-    case binary:split(Role, <<",">>, [global]) of
+-spec parse_node_role(Flags :: binary()) -> master | replica.
+parse_node_role(Flags) ->
+    case binary:split(Flags, <<",">>, [global]) of
         [<<"master">> | _] -> master;
+        [<<"myself">>, <<"master">> | _] -> master;
         [<<"slave">> | _] -> replica;
         _ -> master  % Default to master if role is unclear
     end.
@@ -680,7 +681,7 @@ update_node_role(SlotsMap, Role) ->
     Node = SlotsMap#slots_map.node,
     SlotsMap#slots_map{node = Node#node{role = parse_node_role(Role)}}.
 
-%% @doc Parse cluster nodes output and update node roles
+%% @doc Parse cluster nodes output
 -spec parse_cluster_nodes(Nodes :: binary()) -> [#node{}].
 parse_cluster_nodes(Nodes) ->
     NodeLines = binary:split(Nodes, <<"\n">>, [global]),
