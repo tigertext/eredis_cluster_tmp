@@ -476,19 +476,25 @@ connect_all_slots(PoolSup, SlotsMapList) ->
                  Options :: options(), State :: #state{}) -> #state{}.
 connect_(InitNodes, Options, State) ->
     lager:debug("Attempting to connect to Redis cluster with nodes: ~p and options: ~p", [InitNodes, Options]),
-    case get_cluster_info_from_init_nodes(InitNodes, Options) of
-        {ok, ClusterInfo} ->
-            lager:debug("Successfully got cluster info: ~p", [ClusterInfo]),
-            NewState = State#state{
-                cluster_info = ClusterInfo,
-                options = Options,
-                node_options = Options,
-                init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes]
-            },
-            reload_slots_map(NewState);
-        {error, Reason} ->
-            lager:error("Failed to get cluster info: ~p", [Reason]),
-            throw({reply, {error, {cannot_connect_to_cluster, Reason}}, State})
+    case InitNodes of
+        [] ->
+            lager:error("No init nodes provided"),
+            throw({reply, {error, {cannot_connect_to_cluster, no_init_nodes}}, State});
+        _ ->
+            case get_cluster_info_from_init_nodes(InitNodes, Options) of
+                {ok, ClusterInfo} ->
+                    lager:debug("Successfully got cluster info: ~p", [ClusterInfo]),
+                    NewState = State#state{
+                        cluster_info = ClusterInfo,
+                        options = Options,
+                        node_options = Options,
+                        init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes]
+                    },
+                    reload_slots_map(NewState);
+                {error, Reason} ->
+                    lager:error("Failed to get cluster info: ~p", [Reason]),
+                    throw({reply, {error, {cannot_connect_to_cluster, Reason}}, State})
+            end
     end.
 
 -spec get_cluster_info_from_init_nodes([{string(), integer()}], options()) ->
@@ -586,8 +592,17 @@ handle_cast({async_init, Cluster}, State) ->
                         []
                 end,
 
-    %% application env options are read later in callstack
-    {noreply, connect_(InitNodes, [], State#state{pool_sup = PoolSup})};
+    try connect_(InitNodes, [], State#state{pool_sup = PoolSup}) of
+        NewState ->
+            {noreply, NewState}
+    catch
+        {reply, {error, Reason}, _} ->
+            lager:error("Failed to connect during async init: ~p", [Reason]),
+            {noreply, State#state{pool_sup = PoolSup}};
+        _:Reason ->
+            lager:error("Unexpected error during async init: ~p", [Reason]),
+            {noreply, State#state{pool_sup = PoolSup}}
+    end;
 handle_cast({reload_slots_map, Version}, #state{version = Version} = State) ->
     {noreply, reload_slots_map(State)};
 handle_cast({reload_slots_map, _OldVersion}, State) ->
