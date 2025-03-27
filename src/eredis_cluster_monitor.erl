@@ -260,8 +260,16 @@ get_cluster_info_from_existing_pools(SlotMaps, Options, Query, FailFn, SlotMapIt
     case next_node_in_slots_maps(SlotMaps, Options, SlotMapIterator) of
         {ok, Node, NewSlotMapIterator} ->
             Transaction = fun(Connection) ->
-                                  get_cluster_info_from_connection(Connection, Query, FailFn, Node)
-                          end,
+                try get_cluster_info_from_connection(Connection) of
+                    {ok, Result} ->
+                        {ok, Result};
+                    Error ->
+                        {error, Error}
+                catch
+                    _:Error ->
+                        {error, Error}
+                end
+            end,
             try
                 {ok, _Result} = poolboy:transaction(Node#node.pool, Transaction)
             catch
@@ -311,15 +319,15 @@ get_cluster_info_from_init_nodes([Node|Nodes], Options, Query, FailFn, ErrorList
             try get_cluster_info_from_connection(Connection) of
                 {ok, Result} ->
                     Result;
-                Reason ->
+                Error ->
                     get_cluster_info_from_init_nodes(Nodes, Options, Query, FailFn,
-                                                     [{Node, Reason} | ErrorList])
+                                                     [{Node, Error} | ErrorList])
             after
                 eredis:stop(Connection)
             end;
-        Reason ->
+        Error ->
             get_cluster_info_from_init_nodes(Nodes, Options, Query, FailFn,
-                                             [{Node, Reason} | ErrorList])
+                                             [{Node, Error} | ErrorList])
     end.
 
 -spec get_cluster_info_from_connection(connection()) -> cluster_info().
