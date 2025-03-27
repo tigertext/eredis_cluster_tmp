@@ -490,7 +490,9 @@ connect_(InitNodes, Options, State) ->
             lager:debug("Successfully got cluster info: ~p", [ClusterInfo]),
             NewState = State#state{
                 cluster_info = ClusterInfo,
-                options = Options
+                options = Options,
+                node_options = Options,
+                init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes]
             },
             reload_slots_map(NewState);
         {error, Reason} ->
@@ -662,21 +664,21 @@ update_node_role(SlotsMap, Role) ->
     SlotsMap#slots_map{node = Node#node{role = parse_node_role(Role)}}.
 
 %% @doc Parse cluster nodes output and update node roles
--spec parse_cluster_nodes(Nodes :: binary(), Options :: options()) -> [#node{}].
-parse_cluster_nodes(Nodes, Options) ->
+-spec parse_cluster_nodes(Nodes :: binary()) -> [#node{}].
+parse_cluster_nodes(Nodes) ->
     NodeLines = binary:split(Nodes, <<"\n">>, [global]),
     lists:filtermap(
         fun(Line) ->
             case binary:split(Line, <<" ">>, [global]) of
-                [NodeId, IpPort, Flags, MasterId | _] ->
+                [NodeId, IpPort, Flags, _MasterId | _] ->
                     [Ip, Port] = binary:split(IpPort, <<":">>),
                     Node = #node{
                         address = binary_to_list(Ip),
                         port = binary_to_integer(Port),
-                        options = Options,
+                        role = parse_node_role(Flags),
                         pool = list_to_atom("eredis_cluster_pool_" ++ binary_to_list(NodeId))
                     },
-                    {true, update_node_role(Node, Flags)};
+                    {true, Node};
                 _ ->
                     false
             end

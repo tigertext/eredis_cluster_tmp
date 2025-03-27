@@ -26,13 +26,16 @@
 
 -type options() :: [{term(), term()}].
 
+%% @doc Record for Redis cluster node information
 -record(node, {
     address :: string(),
     port :: integer(),
     role :: master | replica,
-    options = [] :: options()
+    options = [] :: options(),
+    pool :: atom() | undefined
 }).
 
+%% @doc Record for Redis cluster slot mapping
 -record(slots_map, {
     index :: integer(),
     start_slot :: integer(),
@@ -40,18 +43,22 @@
     node :: #node{}
 }).
 
+%% @doc Record for Redis cluster information
 -record(cluster_info, {
     nodes :: [#node{}],
     slots :: [#slots_map{}]
 }).
 
+%% @doc Record for Redis cluster monitor state
 -record(state, {
     slots_maps = {} :: tuple(),
     slots_table :: ets:tid(),
     pool_sup :: pid(),
     version = 0 :: integer(),
     cluster_info :: #cluster_info{},
-    options = [] :: options()
+    options = [] :: options(),
+    init_nodes = [] :: [#node{}],
+    node_options = [] :: options()
 }).
 
 -define(default_cluster, eredis_cluster_default).
