@@ -44,6 +44,9 @@
 %% Specific pools (Redis nodes), named cluster
 -export([get_pool_by_command/2, get_pool_by_key/2, get_all_pools/1]).
 
+%% Get key slot and node info
+-export([get_key_slot_node/1, get_key_slot_node/2]).
+
 %% PubSub functionality (default cluster)
 -export([publish/2, subscribe/1, psubscribe/1, unsubscribe/1, punsubscribe/1]).
 
@@ -1449,6 +1452,24 @@ pubsub_loop(Connection, Parent, Cluster) ->
                 exit(normal)
         end
     end.
+
+%% =============================================================================
+%% @doc Returns the hash slot and the connection pool for the Redis node responsible 
+%% for the key in the default cluster.
+%% @end
+%% =============================================================================
+-spec get_key_slot_node(Key::anystring()) -> {integer(), atom()} | {integer(), undefined}.
+get_key_slot_node(Key) ->
+    get_key_slot_node(?default_cluster, Key).
+
+%% @doc Like get_key_slot_node/1 for a named cluster.
+-spec get_key_slot_node(Cluster::atom(), Key::anystring()) -> 
+    {integer(), atom()} | {integer(), undefined}.
+get_key_slot_node(Cluster, Key) ->
+    Slot = get_key_slot(Key),
+    State = eredis_cluster_monitor:get_state(Cluster),
+    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
+    {Slot, Pool}.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
