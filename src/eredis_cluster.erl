@@ -49,9 +49,11 @@
 
 %% PubSub functionality (default cluster)
 -export([publish/2, subscribe/1, psubscribe/1, unsubscribe/1, punsubscribe/1]).
+-export([subscribe_process/2, subscribe_process/3]).
 
 %% PubSub functionality (named cluster)
 -export([publish/3, subscribe/2, psubscribe/2, unsubscribe/2, punsubscribe/2]).
+-export([subscribe_process/4]).
 
 -ifdef(TEST).
 -export([get_key_slot/1]).
@@ -1223,7 +1225,7 @@ arg_after_keyword(Keyword, [Arg|Args]) ->
     end.
 
 memory_arg([Subcommand | Args]) when is_binary(Subcommand) ->
-    memory_arg([binary_to_list(Subcommand) | Args]);
+    memory_arg([binary_to_list(Subcommand)|Args]);
 memory_arg([Subcommand | Args]) ->
     case string:to_lower(Subcommand) of
         "usage" -> nth_arg(1, Args);
@@ -1451,6 +1453,87 @@ pubsub_loop(Connection, Parent, Cluster) ->
                 Parent ! {error, Reason},
                 exit(normal)
         end
+    end.
+
+%% =============================================================================
+%% @doc Subscribe to one or more channels with an integrated message processing function.
+%%
+%% This function combines subscribe with a message processing function.
+%% The function will be called for each received message with the parameters:
+%% Fun(Channel, Message, State) -> NewState
+%%
+%% @end
+%% =============================================================================
+-spec subscribe_process(Channels::[anystring()], Fun::function()) -> 
+    {ok, pid()} | {error, Reason::term()}.
+subscribe_process(Channels, Fun) ->
+    subscribe_process(?default_cluster, Channels, Fun, undefined).
+
+%% @doc Subscribe to one or more channels with an integrated message processing function and initial state.
+-spec subscribe_process(Channels::[anystring()], Fun::function(), State::term()) -> 
+    {ok, pid()} | {error, Reason::term()}.
+subscribe_process(Channels, Fun, State) ->
+    subscribe_process(?default_cluster, Channels, Fun, State).
+
+%% @doc Subscribe to one or more channels with an integrated message processing function on a specific cluster.
+-spec subscribe_process(Cluster::atom(), Channels::[anystring()], Fun::function(), State::term()) -> 
+    {ok, pid()} | {error, Reason::term()}.
+subscribe_process(Cluster, Channels, Fun, State) when is_list(Channels), length(Channels) > 0, is_function(Fun) ->
+    % Create a new process to handle the subscription and message processing
+    Parent = self(),
+    Pid = spawn_link(fun() -> 
+        % First subscribe to the channels
+        case subscribe(Cluster, Channels) of
+            {ok, SubPid} ->
+                % Start processing messages
+                process_loop(Parent, SubPid, Fun, State);
+            Error ->
+                Parent ! Error
+        end
+    end),
+    {ok, Pid}.
+
+%% @private Message processing loop that receives messages from the subscription process
+process_loop(Parent, SubPid, Fun, State) ->
+    receive
+        % Handle message from subscription
+        {message, Channel, Message} ->
+            try Fun(Channel, Message, State) of
+                NewState ->
+                    process_loop(Parent, SubPid, Fun, NewState)
+            catch
+                Error:Reason:Stack ->
+                    Parent ! {error, {process_crashed, Error, Reason, Stack}},
+                    unsubscribe(SubPid),
+                    exit(normal)
+            end;
+        
+        % Handle subscription confirmation
+        {subscribed, Channel, Count} ->
+            Parent ! {subscribed, Channel, Count},
+            process_loop(Parent, SubPid, Fun, State);
+        
+        % Handle unsubscribe confirmation
+        {unsubscribed, Channel, Count} ->
+            Parent ! {unsubscribed, Channel, Count},
+            if Count =:= 0 -> exit(normal);
+               true -> process_loop(Parent, SubPid, Fun, State)
+            end;
+        
+        % Handle unsubscribe command from parent
+        {unsubscribe} ->
+            unsubscribe(SubPid),
+            exit(normal);
+        
+        % Handle any errors from subscription process
+        {error, Reason} ->
+            Parent ! {error, Reason},
+            exit(normal);
+        
+        % Forward any other messages to the parent
+        Other ->
+            Parent ! Other,
+            process_loop(Parent, SubPid, Fun, State)
     end.
 
 %% =============================================================================
