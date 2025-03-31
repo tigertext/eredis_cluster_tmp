@@ -44,6 +44,12 @@
 %% Specific pools (Redis nodes), named cluster
 -export([get_pool_by_command/2, get_pool_by_key/2, get_all_pools/1]).
 
+%% PubSub functionality (default cluster)
+-export([publish/2, subscribe/1, psubscribe/1, unsubscribe/1, punsubscribe/1]).
+
+%% PubSub functionality (named cluster)
+-export([publish/3, subscribe/2, psubscribe/2, unsubscribe/2, punsubscribe/2]).
+
 -ifdef(TEST).
 -export([get_key_slot/1]).
 -export([get_key_from_command/1]).
@@ -1236,6 +1242,212 @@ resource_queue_redesign_log(Cluster, Command, Result) ->
             lager:info("Debug - resource queue re-design cluster ~p command ~p error ~p", [Cluster, Command, Result]);
         _ ->
             ok
+    end.
+
+%% =============================================================================
+%% @doc Publish a message to a channel.
+%%
+%% Returns the number of clients that received the message.
+%% @end
+%% =============================================================================
+-spec publish(Channel::anystring(), Message::anystring()) -> 
+    {ok, non_neg_integer()} | {error, Reason::term()}.
+publish(Channel, Message) ->
+    publish(?default_cluster, Channel, Message).
+
+%% @doc Publish a message to a channel on a specific cluster.
+-spec publish(Cluster::atom(), Channel::anystring(), Message::anystring()) -> 
+    {ok, non_neg_integer()} | {error, Reason::term()}.
+publish(Cluster, Channel, Message) ->
+    Command = ["PUBLISH", Channel, Message],
+    query(Cluster, Command, Channel).
+
+%% =============================================================================
+%% @doc Subscribe to one or more channels.
+%%
+%% Note: This function creates a dedicated connection to Redis for PubSub,
+%% as subscription connections cannot be used for other commands.
+%% The subscription will remain active in a separate process that is linked
+%% to the caller.
+%%
+%% Channel messages will be delivered as Erlang messages of the form:
+%% {message, Channel, Message}
+%%
+%% When a subscription is confirmed, a message of the form:
+%% {subscribed, Channel, Count}
+%% where Count is the number of channels currently subscribed to.
+%%
+%% @end
+%% =============================================================================
+-spec subscribe(Channels::[anystring()]) -> {ok, pid()} | {error, Reason::term()}.
+subscribe(Channels) ->
+    subscribe(?default_cluster, Channels).
+
+%% @doc Subscribe to one or more channels on a specific cluster.
+-spec subscribe(Cluster::atom(), Channels::[anystring()]) ->
+    {ok, pid()} | {error, Reason::term()}.
+subscribe(Cluster, Channels) when is_list(Channels), length(Channels) > 0 ->
+    % Use the first channel to determine the node
+    Channel = hd(Channels),
+    Slot = get_key_slot(Channel),
+    State = eredis_cluster_monitor:get_state(Cluster),
+    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
+
+    % Start a subscriber process that is linked to the caller
+    Parent = self(),
+    Pid = spawn_link(fun() -> pubsub_init(Cluster, Pool, Parent, subscribe, Channels) end),
+    {ok, Pid}.
+
+%% =============================================================================
+%% @doc Subscribe to one or more channels using a pattern.
+%%
+%% Similar to subscribe/1, but uses pattern matching to subscribe to channels.
+%% Channel messages will be delivered as Erlang messages of the form:
+%% {pmessage, Pattern, Channel, Message}
+%%
+%% When a subscription is confirmed, a message of the form:
+%% {psubscribed, Pattern, Count}
+%% where Count is the number of patterns currently subscribed to.
+%%
+%% @end
+%% =============================================================================
+-spec psubscribe(Patterns::[anystring()]) -> {ok, pid()} | {error, Reason::term()}.
+psubscribe(Patterns) ->
+    psubscribe(?default_cluster, Patterns).
+
+%% @doc Subscribe to one or more channels using a pattern on a specific cluster.
+-spec psubscribe(Cluster::atom(), Patterns::[anystring()]) ->
+    {ok, pid()} | {error, Reason::term()}.
+psubscribe(Cluster, Patterns) when is_list(Patterns), length(Patterns) > 0 ->
+    % Use the first pattern to determine the node
+    Pattern = hd(Patterns),
+    Slot = get_key_slot(Pattern),
+    State = eredis_cluster_monitor:get_state(Cluster),
+    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
+
+    % Start a subscriber process that is linked to the caller
+    Parent = self(),
+    Pid = spawn_link(fun() -> pubsub_init(Cluster, Pool, Parent, psubscribe, Patterns) end),
+    {ok, Pid}.
+
+%% =============================================================================
+%% @doc Unsubscribe from one or more channels.
+%%
+%% Send the unsubscribe command to the subscription process.
+%% @end
+%% =============================================================================
+-spec unsubscribe(SubscriberPid::pid()) -> ok.
+unsubscribe(SubscriberPid) ->
+    unsubscribe(?default_cluster, SubscriberPid).
+
+%% @doc Unsubscribe from one or more channels on a specific cluster.
+-spec unsubscribe(Cluster::atom(), SubscriberPid::pid()) -> ok.
+unsubscribe(_Cluster, SubscriberPid) when is_pid(SubscriberPid) ->
+    SubscriberPid ! {unsubscribe, self()},
+    ok.
+
+%% =============================================================================
+%% @doc Unsubscribe from one or more pattern subscriptions.
+%%
+%% Send the punsubscribe command to the subscription process.
+%% @end
+%% =============================================================================
+-spec punsubscribe(SubscriberPid::pid()) -> ok.
+punsubscribe(SubscriberPid) ->
+    punsubscribe(?default_cluster, SubscriberPid).
+
+%% @doc Unsubscribe from one or more pattern subscriptions on a specific cluster.
+-spec punsubscribe(Cluster::atom(), SubscriberPid::pid()) -> ok.
+punsubscribe(_Cluster, SubscriberPid) when is_pid(SubscriberPid) ->
+    SubscriberPid ! {punsubscribe, self()},
+    ok.
+
+%% @private Initialize a PubSub connection and start the subscription loop
+pubsub_init(Cluster, Pool, Parent, Type, Channels) ->
+    % Get a dedicated connection from the pool
+    case eredis_cluster_pool:transaction(Pool, fun(Worker) -> {ok, Worker} end) of
+        {ok, Connection} ->
+            % Prepare the subscribe command
+            Command = case Type of
+                subscribe -> ["SUBSCRIBE" | Channels];
+                psubscribe -> ["PSUBSCRIBE" | Channels]
+            end,
+
+            % Send the subscribe command
+            case eredis:q(Connection, Command) of
+                {error, Reason} ->
+                    Parent ! {error, Reason},
+                    exit(normal);
+                _ ->
+                    % Start the subscription loop
+                    pubsub_loop(Connection, Parent, Cluster)
+            end;
+        Error ->
+            Parent ! Error,
+            exit(normal)
+    end.
+
+%% @private Main subscription message loop
+pubsub_loop(Connection, Parent, Cluster) ->
+    receive
+        % Handle unsubscribe request
+        {unsubscribe, From} ->
+            eredis:q(Connection, ["UNSUBSCRIBE"]),
+            From ! {unsubscribed},
+            exit(normal);
+
+        % Handle pattern unsubscribe request
+        {punsubscribe, From} ->
+            eredis:q(Connection, ["PUNSUBSCRIBE"]),
+            From ! {punsubscribed},
+            exit(normal);
+
+        % Handle unexpected process termination
+        {'EXIT', Connection, _Reason} ->
+            Parent ! {error, connection_dropped},
+            exit(normal)
+    after 0 ->
+        % Check for messages from Redis without blocking
+        case eredis:q(Connection, [], 0) of
+            {ok, [<<"message">>, Channel, Msg]} ->
+                Parent ! {message, Channel, Msg},
+                pubsub_loop(Connection, Parent, Cluster);
+
+            {ok, [<<"pmessage">>, Pattern, Channel, Msg]} ->
+                Parent ! {pmessage, Pattern, Channel, Msg},
+                pubsub_loop(Connection, Parent, Cluster);
+
+            {ok, [<<"subscribe">>, Channel, Count]} ->
+                Parent ! {subscribed, Channel, Count},
+                pubsub_loop(Connection, Parent, Cluster);
+
+            {ok, [<<"psubscribe">>, Pattern, Count]} ->
+                Parent ! {psubscribed, Pattern, Count},
+                pubsub_loop(Connection, Parent, Cluster);
+
+            {ok, [<<"unsubscribe">>, Channel, Count]} ->
+                Parent ! {unsubscribed, Channel, Count},
+                if Count =:= 0 -> exit(normal);
+                   true -> pubsub_loop(Connection, Parent, Cluster)
+                end;
+
+            {ok, [<<"punsubscribe">>, Pattern, Count]} ->
+                Parent ! {punsubscribed, Pattern, Count},
+                if Count =:= 0 -> exit(normal);
+                   true -> pubsub_loop(Connection, Parent, Cluster)
+                end;
+
+            % No message yet, wait a short time before checking again
+            undefined ->
+                timer:sleep(100),
+                pubsub_loop(Connection, Parent, Cluster);
+
+            {error, Reason} ->
+                % Try to reconnect when connection fails
+                reconnect(Cluster),
+                Parent ! {error, Reason},
+                exit(normal)
+        end
     end.
 
 -ifdef(TEST).
