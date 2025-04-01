@@ -854,14 +854,18 @@ handle_transaction_result(Results, Cluster, Version) when is_list(Results) ->
     HandledResults = [handle_transaction_result(Result, Cluster, Version)
                       || Result <- Results],
     case lists:member(retry, HandledResults) of
-        true  -> retry;
+        true  ->
+            lager:info("Transaction failed, will retry. Results: ~p", [HandledResults]),
+            retry;
         false -> Results
     end;
+
 handle_transaction_result(Result, Cluster, Version) ->
     case Result of
         %% If we detect a node went down, we should probably refresh
         %% the slot mapping.
         {error, no_connection} ->
+            lager:error("No connection available, refreshing mapping. Version: ~p", [Version]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
@@ -870,34 +874,41 @@ handle_transaction_result(Result, Cluster, Version) ->
         %% the next request. We don't need to refresh the slot mapping in this
         %% case
         {error, tcp_closed} ->
+            lager:warning("TCP connection closed, will retry"),
             retry;
 
         %% Pool is busy
         {error, pool_busy} ->
+            lager:warning("Pool is busy, will retry"),
             retry;
 
         %% Other TCP issues
         %% See reasons: https://erlang.org/doc/man/inet.html#type-posix
         {error, Reason} when is_atom(Reason) ->
+            lager:error("TCP error: ~p, refreshing mapping", [Reason]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Redis explicitly say our slot mapping is incorrect,
         %% we need to refresh it
-        {error, <<"MOVED ", _/binary>>} ->
+        {error, <<"MOVED ", Rest/binary>>} ->
+            lager:error("MOVED error: ~p, refreshing mapping", [Rest]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Migration ongoing
-        {error, <<"ASK ", _/binary>>} ->
+        {error, <<"ASK ", Rest/binary>>} ->
+            lager:warning("ASK error: ~p, will retry", [Rest]),
             retry;
 
         %% Resharding ongoing, only partial keys exists
-        {error, <<"TRYAGAIN ", _/binary>>} ->
+        {error, <<"TRYAGAIN ", Rest/binary>>} ->
+            lager:warning("TRYAGAIN error: ~p, will retry", [Rest]),
             retry;
 
         %% Hash not served, can be triggered temporary due to resharding
-        {error, <<"CLUSTERDOWN ", _/binary>>} ->
+        {error, <<"CLUSTERDOWN ", Rest/binary>>} ->
+            lager:error("CLUSTERDOWN error: ~p, refreshing mapping", [Rest]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
