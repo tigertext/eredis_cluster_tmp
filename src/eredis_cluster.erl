@@ -855,7 +855,7 @@ handle_transaction_result(Results, Cluster, Version, IsLastTime) when is_list(Re
                       || Result <- Results],
     case lists:member(retry, HandledResults) of
         true  ->
-            IsLastTime andalso lager:info("Transaction failed, will retry. Results: ~p", [HandledResults]),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:info("Transaction failed, will retry. Results: ~p", [HandledResults]),
             retry;
         false -> Results
     end;
@@ -865,7 +865,7 @@ handle_transaction_result(Result, Cluster, Version, IsLastTime) ->
         %% If we detect a node went down, we should probably refresh
         %% the slot mapping.
         {error, no_connection} ->
-            IsLastTime andalso lager:error("No connection available, refreshing mapping. Version: ~p", [Version]),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:error("No connection available, refreshing mapping. Version: ~p", [Version]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
@@ -874,41 +874,41 @@ handle_transaction_result(Result, Cluster, Version, IsLastTime) ->
         %% the next request. We don't need to refresh the slot mapping in this
         %% case
         {error, tcp_closed} ->
-            IsLastTime andalso lager:warning("TCP connection closed, will retry"),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:warning("TCP connection closed, will retry"),
             retry;
 
         %% Pool is busy
         {error, pool_busy} ->
-            IsLastTime andalso lager:warning("Pool is busy, will retry"),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:warning("Pool is busy, will retry"),
             retry;
 
         %% Other TCP issues
         %% See reasons: https://erlang.org/doc/man/inet.html#type-posix
         {error, Reason} when is_atom(Reason) ->
-            IsLastTime andalso lager:error("TCP error: ~p, refreshing mapping", [Reason]),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:error("TCP error: ~p, refreshing mapping", [Reason]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Redis explicitly say our slot mapping is incorrect,
         %% we need to refresh it
         {error, <<"MOVED ", Rest/binary>>} ->
-            IsLastTime andalso lager:error("MOVED error: ~p, refreshing mapping", [Rest]),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:error("MOVED error: ~p, refreshing mapping", [Rest]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Migration ongoing
         {error, <<"ASK ", Rest/binary>>} ->
-            IsLastTime andalso lager:warning("ASK error: ~p, will retry", [Rest]),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:warning("ASK error: ~p, will retry", [Rest]),
             retry;
 
         %% Resharding ongoing, only partial keys exists
         {error, <<"TRYAGAIN ", Rest/binary>>} ->
-            IsLastTime andalso lager:warning("TRYAGAIN error: ~p, will retry", [Rest]),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:warning("TRYAGAIN error: ~p, will retry", [Rest]),
             retry;
 
         %% Hash not served, can be triggered temporary due to resharding
         {error, <<"CLUSTERDOWN ", Rest/binary>>} ->
-            IsLastTime andalso lager:error("CLUSTERDOWN error: ~p, refreshing mapping", [Rest]),
+            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:error("CLUSTERDOWN error: ~p, refreshing mapping", [Rest]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
