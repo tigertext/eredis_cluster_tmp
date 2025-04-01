@@ -291,7 +291,7 @@ qa(Cluster, Command, Counter, Res) ->
             Transaction = fun(Worker) -> qw(Worker, Command) end,
             Results = [eredis_cluster_pool:transaction(Pool, Transaction) ||
                          Pool <- Pools],
-            case handle_transaction_result(Results, Cluster, Version)
+            case handle_transaction_result(Results, Cluster, Version, Counter =:= ?redis_cluster_request_max_retries - 1)
             of
                 retry  -> qa(Cluster, Command, Counter + 1, Results);
                 Result -> Result
@@ -339,7 +339,7 @@ qa2(Cluster, Command, Counter, Res) ->
                          Pool <- Pools],
             Tmp = lists:foldl(
                     fun({_P, TR}, Acc) ->
-                            case handle_transaction_result(TR, Cluster, Version)
+                            case handle_transaction_result(TR, Cluster, Version, Counter =:= ?redis_cluster_request_max_retries - 1)
                             of
                                 retry -> [retry|Acc];
                                 _     -> Acc
@@ -431,22 +431,22 @@ qmn(Cluster, Commands, Counter) ->
     %% TODO: Implement ASK redirects for qmn.
 
     {CommandsByPools, MappingInfo, Version} = split_by_pools(Cluster, Commands),
-    case qmn2(Cluster, CommandsByPools, MappingInfo, [], Version) of
+    case qmn2(Cluster, CommandsByPools, MappingInfo, [], Version, Counter =:= ?redis_cluster_request_max_retries - 1) of
         retry -> qmn(Cluster, Commands, Counter + 1);
         Res -> Res
     end.
 
 qmn2(Cluster, [{Pool, PoolCommands} | T1], [{Pool, Mapping} | T2], Acc,
-     Version) ->
+     Version, IsLastTime) ->
     Transaction = fun(Worker) -> qw(Worker, PoolCommands) end,
     Result = eredis_cluster_pool:transaction(Pool, Transaction),
-    case handle_transaction_result(Result, Cluster, Version) of
+    case handle_transaction_result(Result, Cluster, Version, IsLastTime) of
         retry -> retry;
         Res ->
             MappedRes = lists:zip(Mapping, Res),
-            qmn2(Cluster, T1, T2, MappedRes ++ Acc, Version)
+            qmn2(Cluster, T1, T2, MappedRes ++ Acc, Version, IsLastTime)
     end;
-qmn2(_Cluster, [], [], Acc, _Version) ->
+qmn2(_Cluster, [], [], Acc, _Version, _IsLastTime) ->
     SortedAcc =
         lists:sort(
             fun({Index1, _}, {Index2, _}) ->
@@ -529,7 +529,7 @@ transaction_retry_loop(Cluster, Transaction, SlotOrPool, Counter) ->
                 {Pool0, Version0}
         end,
     Result = eredis_cluster_pool:transaction(Pool, Transaction),
-    case handle_transaction_result(Result, Cluster, Version) of
+    case handle_transaction_result(Result, Cluster, Version, Counter =:= ?redis_cluster_request_max_retries - 1) of
         retry ->
             transaction_retry_loop(Cluster, Transaction, SlotOrPool, Counter + 1);
         Result ->
@@ -676,7 +676,7 @@ query(Cluster, Command, PoolKey, Counter) ->
     {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
     Result0 = eredis_cluster_pool:transaction(Pool, fun(W) -> qw(W, Command) end),
     Result = handle_redirects(Cluster, Command, Result0, Version),
-    case handle_transaction_result(Result, Cluster, Version) of
+    case handle_transaction_result(Result, Cluster, Version, Counter =:= ?redis_cluster_request_max_retries - 1) of
         retry  ->
             query(Cluster, Command, PoolKey, Counter + 1);
         Result -> Result
@@ -847,25 +847,25 @@ parse_redirect_info(RedirectInfo) ->
             {error, bad_redirect}
     end.
 
-handle_transaction_result(Results, Cluster, Version) when is_list(Results) ->
+handle_transaction_result(Results, Cluster, Version, IsLastTime) when is_list(Results) ->
     %% Consider all errors, to make sure slot mapping is updated if
     %% needed. (Multiple slot mapping updates have no effect if the
     %% Version is the same.)
-    HandledResults = [handle_transaction_result(Result, Cluster, Version)
+    HandledResults = [handle_transaction_result(Result, Cluster, Version, IsLastTime)
                       || Result <- Results],
     case lists:member(retry, HandledResults) of
         true  ->
-            lager:info("Transaction failed, will retry. Results: ~p", [HandledResults]),
+            IsLastTime andalso lager:info("Transaction failed, will retry. Results: ~p", [HandledResults]),
             retry;
         false -> Results
     end;
 
-handle_transaction_result(Result, Cluster, Version) ->
+handle_transaction_result(Result, Cluster, Version, IsLastTime) ->
     case Result of
         %% If we detect a node went down, we should probably refresh
         %% the slot mapping.
         {error, no_connection} ->
-            lager:error("No connection available, refreshing mapping. Version: ~p", [Version]),
+            IsLastTime andalso lager:error("No connection available, refreshing mapping. Version: ~p", [Version]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
@@ -874,41 +874,41 @@ handle_transaction_result(Result, Cluster, Version) ->
         %% the next request. We don't need to refresh the slot mapping in this
         %% case
         {error, tcp_closed} ->
-            lager:warning("TCP connection closed, will retry"),
+            IsLastTime andalso lager:warning("TCP connection closed, will retry"),
             retry;
 
         %% Pool is busy
         {error, pool_busy} ->
-            lager:warning("Pool is busy, will retry"),
+            IsLastTime andalso lager:warning("Pool is busy, will retry"),
             retry;
 
         %% Other TCP issues
         %% See reasons: https://erlang.org/doc/man/inet.html#type-posix
         {error, Reason} when is_atom(Reason) ->
-            lager:error("TCP error: ~p, refreshing mapping", [Reason]),
+            IsLastTime andalso lager:error("TCP error: ~p, refreshing mapping", [Reason]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Redis explicitly say our slot mapping is incorrect,
         %% we need to refresh it
         {error, <<"MOVED ", Rest/binary>>} ->
-            lager:error("MOVED error: ~p, refreshing mapping", [Rest]),
+            IsLastTime andalso lager:error("MOVED error: ~p, refreshing mapping", [Rest]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Migration ongoing
         {error, <<"ASK ", Rest/binary>>} ->
-            lager:warning("ASK error: ~p, will retry", [Rest]),
+            IsLastTime andalso lager:warning("ASK error: ~p, will retry", [Rest]),
             retry;
 
         %% Resharding ongoing, only partial keys exists
         {error, <<"TRYAGAIN ", Rest/binary>>} ->
-            lager:warning("TRYAGAIN error: ~p, will retry", [Rest]),
+            IsLastTime andalso lager:warning("TRYAGAIN error: ~p, will retry", [Rest]),
             retry;
 
         %% Hash not served, can be triggered temporary due to resharding
         {error, <<"CLUSTERDOWN ", Rest/binary>>} ->
-            lager:error("CLUSTERDOWN error: ~p, refreshing mapping", [Rest]),
+            IsLastTime andalso lager:error("CLUSTERDOWN error: ~p, refreshing mapping", [Rest]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
