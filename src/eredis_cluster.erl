@@ -1015,7 +1015,7 @@ optimistic_locking_transaction(WatchedKey, GetCommand, UpdateFunction) ->
         {lists:last(RedisResult), Result}
     end,
     case transaction(Transaction, Slot, {ok, undefined},
-                     ?app_config_param_utils:get(eredis_cluster, optimistic_locking_transaction_max_retries, 16)) of
+                     app_config_param_utils:get(eredis_cluster, optimistic_locking_transaction_max_retries, 16)) of
         {{ok, undefined}, _} ->  % The key was touched by other client
             {error, resource_busy};
         {{ok, TransactionResult}, UpdateResult} ->
