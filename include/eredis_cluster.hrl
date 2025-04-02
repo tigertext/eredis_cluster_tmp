@@ -41,8 +41,8 @@
 }).
 
 -define(default_cluster, eredis_cluster_default).
--define(redis_cluster_request_max_retries, 3).
--define(optimistic_locking_transaction_max_retries, 3).
+-define(redis_cluster_request_max_retries, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)).
+-define(optimistic_locking_transaction_max_retries, app_config_param_utils:get(eredis_cluster, optimistic_locking_transaction_max_retries, 16)).
 -define(REDIS_CLUSTER_HASH_SLOTS, 16384).
 -define(REDIS_RETRY_DELAY, 100).
 
