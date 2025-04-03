@@ -278,7 +278,7 @@ qa(_Cluster, _Command, 0, Res) ->
         _  -> Res
     end;
 qa(Cluster, Command, Counter, Res) ->
-    throttle_retries(Counter),
+    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
 
     State = eredis_cluster_monitor:get_state(Cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
@@ -324,7 +324,7 @@ qa2(_Cluster, _Command, 0, Res) ->
         _  -> Res
     end;
 qa2(Cluster, Command, Counter, Res) ->
-    throttle_retries(Counter),
+    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
 
     State = eredis_cluster_monitor:get_state(Cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
@@ -426,7 +426,7 @@ qmn(Cluster, Commands) -> qmn(Cluster, Commands, app_config_param_utils:get(ered
 qmn(_Cluster, _Commands, 0) ->
     {error, no_connection};
 qmn(Cluster, Commands, Counter) ->
-    throttle_retries(Counter),
+    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
 
     %% TODO: Implement ASK redirects for qmn.
 
@@ -489,13 +489,13 @@ transaction(Transaction, KeyOrPool) when is_function(Transaction) ->
                    Pool :: atom().
 transaction(Transaction, Cluster, Key) when is_list(Key); is_binary(Key) ->
     Slot = get_key_slot(Key),
-    transaction_retry_loop(Cluster, Transaction, Slot, 0);
+    transaction_retry_loop(Cluster, Transaction, Slot, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16));
 transaction(Transaction, Cluster, Pool) when is_atom(Pool) ->
-    transaction_retry_loop(Cluster, Transaction, Pool, 0).
+    transaction_retry_loop(Cluster, Transaction, Pool, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)).
 
 %% Helper for optimistic_locking_transaction.
 transaction(Transaction, Slot, ExpectedValue, Counter) ->
-    case transaction_retry_loop(?default_cluster, Transaction, Slot, 0) of
+    case transaction_retry_loop(?default_cluster, Transaction, Slot, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)) of
         Result when Counter =< 0 ->
             Result;
         ExpectedValue ->
@@ -513,11 +513,11 @@ transaction(Transaction, Slot, ExpectedValue, Counter) ->
                    Transaction  :: fun((Connection :: pid()) -> redis_result()),
                    Slot         :: 0..16383,
                    Pool         :: atom(),
-                   RetryCounter :: 0..16.
+                   RetryCounter :: 0..?redis_cluster_request_max_retries.
 transaction_retry_loop(_Cluster, _Transaction, _SlotOrPool, 0) ->
     {error, no_connection};
 transaction_retry_loop(Cluster, Transaction, SlotOrPool, Counter) ->
-    throttle_retries(Counter),
+    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
     State = eredis_cluster_monitor:get_state(Cluster),
     {Pool, Version} =
         case SlotOrPool of
@@ -665,11 +665,11 @@ query(Cluster, Command, _PoolKey, 0) ->
     catch
         _E:_R ->
             lager:info(?RESOURCE_QUEUE_REDESIGN_LOG_PREFIX ++ "resource queue query failed with max time ~p, cluster ~p command ~p",
-                [app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16), Cluster, Command])
+                [?redis_cluster_request_max_retries, Cluster, Command])
     end,
     {error, no_connection};
 query(Cluster, Command, PoolKey, Counter) ->
-    throttle_retries(Counter),
+    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
     Slot = get_key_slot(PoolKey),
     State = eredis_cluster_monitor:get_state(Cluster),
     {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
