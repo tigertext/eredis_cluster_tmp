@@ -48,10 +48,10 @@
 -export([get_key_slot_node/1, get_key_slot_node/2]).
 
 %% PubSub functionality (default cluster)
--export([publish/2]).
+-export([publish/2, spublish/2]).
 
 %% PubSub functionality (named cluster)
--export([publish/3]).
+-export([publish/3, spublish/3]).
 
 -ifdef(TEST).
 -export([get_key_slot/1]).
@@ -1263,6 +1263,27 @@ publish(Channel, Message) ->
     {ok, non_neg_integer()} | {error, Reason::term()}.
 publish(Cluster, Channel, Message) ->
     Command = ["PUBLISH", Channel, Message],
+    query(Cluster, Command, Channel).
+
+%% =============================================================================
+%% @doc Publish a message using the SPUBLISH command (Redis 7.0+).
+%%
+%% SPUBLISH is a global publish command introduced in Redis 7.0 that
+%% ensures the message is published to all shards in the cluster.
+%% Returns the number of clients that received the message.
+%% @end
+%% =============================================================================
+-spec spublish(Channel::anystring(), Message::anystring()) -> 
+    {ok, non_neg_integer()} | {error, Reason::term()}.
+spublish(Channel, Message) ->
+    spublish(?default_cluster, Channel, Message).
+
+%% @doc Publish a message using the SPUBLISH command (Redis 7.0+) in a named cluster.
+-spec spublish(Cluster::atom(), Channel::anystring(), Message::anystring()) -> 
+    {ok, non_neg_integer()} | {error, Reason::term()}.
+spublish(Cluster, Channel, Message) ->
+    Command = ["SPUBLISH", Channel, Message],
+    % Using Channel as routing key since SPUBLISH handles global publishing automatically
     query(Cluster, Command, Channel).
 
 %% =============================================================================
