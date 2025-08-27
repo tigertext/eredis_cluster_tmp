@@ -261,7 +261,7 @@ qp(Commands) -> q(Commands).
               when Command :: redis_command(),
                    Result  :: [redis_transaction_result()] |
                               {error, no_connection}.
-qa(Command) -> qa(?default_cluster, Command, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16), []).
+qa(Command) -> qa(?default_cluster, Command, 16, []).
 
 %% @doc Performs a query on all nodes in a cluster. When a query to a master
 %% fails, the mapping is refreshed and the query is retried.
@@ -270,7 +270,7 @@ qa(Command) -> qa(?default_cluster, Command, app_config_param_utils:get(eredis_c
                    Command :: redis_command(),
                    Result  :: [redis_transaction_result()] |
                               {error, no_connection}.
-qa(Cluster, Command) -> qa(Cluster, Command, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16), []).
+qa(Cluster, Command) -> qa(Cluster, Command, 16, []).
 
 qa(_Cluster, _Command, 0, Res) ->
     case Res of
@@ -278,7 +278,7 @@ qa(_Cluster, _Command, 0, Res) ->
         _  -> Res
     end;
 qa(Cluster, Command, Counter, Res) ->
-    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
+    throttle_retries(Counter - 16),
 
     State = eredis_cluster_monitor:get_state(Cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
@@ -308,7 +308,7 @@ qa(Cluster, Command, Counter, Res) ->
               when Command :: redis_command(),
                    Result  :: [{Node :: atom(), redis_result()}] |
                               {error, no_connection}.
-qa2(Command) -> qa2(?default_cluster, Command, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16), []).
+qa2(Command) -> qa2(?default_cluster, Command, 16, []).
 
 %% @doc Like qa2/1 but for a named cluster rather than the default cluster.
 -spec qa2(Cluster, Command) -> Result
@@ -316,7 +316,7 @@ qa2(Command) -> qa2(?default_cluster, Command, app_config_param_utils:get(eredis
                    Command :: redis_command(),
                    Result  :: [{Node :: atom(), redis_result()}] |
                               {error, no_connection}.
-qa2(Cluster, Command) -> qa2(Cluster, Command, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16), []).
+qa2(Cluster, Command) -> qa2(Cluster, Command, 16, []).
 
 qa2(_Cluster, _Command, 0, Res) ->
     case Res of
@@ -324,7 +324,7 @@ qa2(_Cluster, _Command, 0, Res) ->
         _  -> Res
     end;
 qa2(Cluster, Command, Counter, Res) ->
-    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
+    throttle_retries(Counter - 16),
 
     State = eredis_cluster_monitor:get_state(Cluster),
     Version = eredis_cluster_monitor:get_state_version(State),
@@ -416,17 +416,17 @@ transaction(Commands) ->
 %% @end
 %% =============================================================================
 -spec qmn(Commands::redis_pipeline_command()) -> redis_pipeline_result().
-qmn(Commands) -> qmn(?default_cluster, Commands, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)).
+qmn(Commands) -> qmn(?default_cluster, Commands, 16).
 
 %% @doc Like qmn/1, but for a named cluster rather than the default cluster.
 -spec qmn(Cluster :: atom(), Commands :: redis_pipeline_command()) ->
           redis_pipeline_result().
-qmn(Cluster, Commands) -> qmn(Cluster, Commands, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)).
+qmn(Cluster, Commands) -> qmn(Cluster, Commands, 16).
 
 qmn(_Cluster, _Commands, 0) ->
     {error, no_connection};
 qmn(Cluster, Commands, Counter) ->
-    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
+    throttle_retries(Counter - 16),
 
     %% TODO: Implement ASK redirects for qmn.
 
@@ -489,13 +489,13 @@ transaction(Transaction, KeyOrPool) when is_function(Transaction) ->
                    Pool :: atom().
 transaction(Transaction, Cluster, Key) when is_list(Key); is_binary(Key) ->
     Slot = get_key_slot(Key),
-    transaction_retry_loop(Cluster, Transaction, Slot, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16));
+    transaction_retry_loop(Cluster, Transaction, Slot, 16);
 transaction(Transaction, Cluster, Pool) when is_atom(Pool) ->
-    transaction_retry_loop(Cluster, Transaction, Pool, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)).
+    transaction_retry_loop(Cluster, Transaction, Pool, 16).
 
 %% Helper for optimistic_locking_transaction.
 transaction(Transaction, Slot, ExpectedValue, Counter) ->
-    case transaction_retry_loop(?default_cluster, Transaction, Slot, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)) of
+    case transaction_retry_loop(?default_cluster, Transaction, Slot, 16) of
         Result when Counter =< 0 ->
             Result;
         ExpectedValue ->
@@ -517,7 +517,7 @@ transaction(Transaction, Slot, ExpectedValue, Counter) ->
 transaction_retry_loop(_Cluster, _Transaction, _SlotOrPool, 0) ->
     {error, no_connection};
 transaction_retry_loop(Cluster, Transaction, SlotOrPool, Counter) ->
-    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
+    throttle_retries(Counter - 16),
     State = eredis_cluster_monitor:get_state(Cluster),
     {Pool, Version} =
         case SlotOrPool of
@@ -645,7 +645,7 @@ query(Cluster, Command) ->
 query(_Cluster, _Command, undefined) ->
     {error, invalid_cluster_command};
 query(Cluster, Command, PoolKey) ->
-    query(Cluster, Command, PoolKey, app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)).
+    query(Cluster, Command, PoolKey, 16).
 
 query_noreply(_Cluster, _Command, undefined) ->
     {error, invalid_cluster_command};
@@ -669,7 +669,7 @@ query(Cluster, Command, _PoolKey, 0) ->
     end,
     {error, no_connection};
 query(Cluster, Command, PoolKey, Counter) ->
-    throttle_retries(Counter - app_config_param_utils:get(eredis_cluster, redis_cluster_request_max_retries, 16)),
+    throttle_retries(Counter - 16),
     Slot = get_key_slot(PoolKey),
     State = eredis_cluster_monitor:get_state(Cluster),
     {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
@@ -854,7 +854,7 @@ handle_transaction_result(Results, Cluster, Version, IsLastTime) when is_list(Re
                       || Result <- Results],
     case lists:member(retry, HandledResults) of
         true  ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:info("Transaction failed, will retry. Results: ~p", [HandledResults]),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:info("Transaction failed, will retry. Results: ~p", [HandledResults]),
             retry;
         false -> Results
     end;
@@ -864,7 +864,7 @@ handle_transaction_result(Result, Cluster, Version, IsLastTime) ->
         %% If we detect a node went down, we should probably refresh
         %% the slot mapping.
         {error, no_connection} ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:error("No connection available, refreshing mapping. Version: ~p", [Version]),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:error("No connection available, refreshing mapping. Version: ~p", [Version]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
@@ -873,41 +873,41 @@ handle_transaction_result(Result, Cluster, Version, IsLastTime) ->
         %% the next request. We don't need to refresh the slot mapping in this
         %% case
         {error, tcp_closed} ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:warning("TCP connection closed, will retry"),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:warning("TCP connection closed, will retry"),
             retry;
 
         %% Pool is busy
         {error, pool_busy} ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:warning("Pool is busy, will retry"),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:warning("Pool is busy, will retry"),
             retry;
 
         %% Other TCP issues
         %% See reasons: https://erlang.org/doc/man/inet.html#type-posix
         {error, Reason} when is_atom(Reason) ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:error("TCP error: ~p, refreshing mapping", [Reason]),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:error("TCP error: ~p, refreshing mapping", [Reason]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Redis explicitly say our slot mapping is incorrect,
         %% we need to refresh it
         {error, <<"MOVED ", Rest/binary>>} ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:error("MOVED error: ~p, refreshing mapping", [Rest]),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:error("MOVED error: ~p, refreshing mapping", [Rest]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
         %% Migration ongoing
         {error, <<"ASK ", Rest/binary>>} ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:warning("ASK error: ~p, will retry", [Rest]),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:warning("ASK error: ~p, will retry", [Rest]),
             retry;
 
         %% Resharding ongoing, only partial keys exists
         {error, <<"TRYAGAIN ", Rest/binary>>} ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:warning("TRYAGAIN error: ~p, will retry", [Rest]),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:warning("TRYAGAIN error: ~p, will retry", [Rest]),
             retry;
 
         %% Hash not served, can be triggered temporary due to resharding
         {error, <<"CLUSTERDOWN ", Rest/binary>>} ->
-            IsLastTime andalso rand:uniform() < app_config_param_utils:get(log_eredis_transaction_failure, print_rate, 0.0) andalso lager:error("CLUSTERDOWN error: ~p, refreshing mapping", [Rest]),
+            IsLastTime andalso rand:uniform() < 0.01 andalso lager:error("CLUSTERDOWN error: ~p, refreshing mapping", [Rest]),
             eredis_cluster_monitor:refresh_mapping(Cluster, Version),
             retry;
 
@@ -1014,7 +1014,7 @@ optimistic_locking_transaction(WatchedKey, GetCommand, UpdateFunction) ->
         {lists:last(RedisResult), Result}
     end,
     case transaction(Transaction, Slot, {ok, undefined},
-                     app_config_param_utils:get(eredis_cluster, optimistic_locking_transaction_max_retries, 16)) of
+                     16) of
         {{ok, undefined}, _} ->  % The key was touched by other client
             {error, resource_busy};
         {{ok, TransactionResult}, UpdateResult} ->
