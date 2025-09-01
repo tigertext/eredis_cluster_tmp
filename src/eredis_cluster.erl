@@ -49,6 +49,8 @@
 -export([get_key_from_command/1]).
 -endif.
 
+-export([is_read_command/1]).
+
 -include("eredis_cluster.hrl").
 
 -define(RESOURCE_QUEUE_REDESIGN_LOG_PREFIX, "Debug - resource queue re-design ").
@@ -653,7 +655,12 @@ query_noreply(Cluster, Command, PoolKey) ->
     Slot = get_key_slot(PoolKey),
     Transaction = fun(Worker) -> qw_noreply(Worker, Command) end,
     State = eredis_cluster_monitor:get_state(Cluster),
-    {Pool, _Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
+    {Pool, _Version} = case is_read_command(Command) of
+        true ->
+            eredis_cluster_monitor:get_replica_pool_by_slot(Slot, State);
+        false ->
+            eredis_cluster_monitor:get_pool_by_slot(Slot, State)
+    end,
     eredis_cluster_pool:transaction(Pool, Transaction),
     %% TODO: Retry if pool is busy? Handle redirects?
     ok.
@@ -672,7 +679,12 @@ query(Cluster, Command, PoolKey, Counter) ->
     throttle_retries(Counter - 16),
     Slot = get_key_slot(PoolKey),
     State = eredis_cluster_monitor:get_state(Cluster),
-    {Pool, Version} = eredis_cluster_monitor:get_pool_by_slot(Slot, State),
+    {Pool, Version} = case is_read_command(Command) of
+        true ->
+            eredis_cluster_monitor:get_replica_pool_by_slot(Slot, State);
+        false ->
+            eredis_cluster_monitor:get_pool_by_slot(Slot, State)
+    end,
     Result0 = eredis_cluster_pool:transaction(Pool, fun(W) -> qw(W, Command) end),
     Result = handle_redirects(Cluster, Command, Result0, Version),
     case handle_transaction_result(Result, Cluster, Version, Counter =:= 1) of
@@ -1239,6 +1251,54 @@ reconnect(Cluster) when is_atom(Cluster) ->
     ok = connect(Cluster, InitNodes, [{pool_max_overflow, PoolMaxOverflow}, {pool_size, PoolSize}]);
 reconnect(_Cluster) ->
        ok.
+
+%% =============================================================================
+%% @doc Classify Redis commands as read-only or write operations
+%% @end
+%% =============================================================================
+-spec is_read_command(Command :: redis_simple_command()) -> boolean().
+is_read_command([CommandName | _]) when is_binary(CommandName) ->
+    is_read_command_name(string:uppercase(binary_to_list(CommandName)));
+is_read_command([CommandName | _]) when is_list(CommandName) ->
+    is_read_command_name(string:uppercase(CommandName));
+is_read_command(_) ->
+    false.
+
+-spec is_read_command_name(CommandName :: string()) -> boolean().
+is_read_command_name("GET") -> true;
+is_read_command_name("MGET") -> true;
+is_read_command_name("HGET") -> true;
+is_read_command_name("HGETALL") -> true;
+is_read_command_name("HMGET") -> true;
+is_read_command_name("HKEYS") -> true;
+is_read_command_name("HVALS") -> true;
+is_read_command_name("HLEN") -> true;
+is_read_command_name("HEXISTS") -> true;
+is_read_command_name("LLEN") -> true;
+is_read_command_name("LINDEX") -> true;
+is_read_command_name("LRANGE") -> true;
+is_read_command_name("SCARD") -> true;
+is_read_command_name("SISMEMBER") -> true;
+is_read_command_name("SMEMBERS") -> true;
+is_read_command_name("SRANDMEMBER") -> true;
+is_read_command_name("ZCARD") -> true;
+is_read_command_name("ZCOUNT") -> true;
+is_read_command_name("ZRANGE") -> true;
+is_read_command_name("ZRANGEBYSCORE") -> true;
+is_read_command_name("ZRANK") -> true;
+is_read_command_name("ZSCORE") -> true;
+is_read_command_name("SCAN") -> true;
+is_read_command_name("HSCAN") -> true;
+is_read_command_name("SSCAN") -> true;
+is_read_command_name("ZSCAN") -> true;
+is_read_command_name("EXISTS") -> true;
+is_read_command_name("TYPE") -> true;
+is_read_command_name("TTL") -> true;
+is_read_command_name("PTTL") -> true;
+is_read_command_name("STRLEN") -> true;
+is_read_command_name("BITCOUNT") -> true;
+is_read_command_name("BITPOS") -> true;
+is_read_command_name(_) -> false.
 
 resource_queue_redesign_log(Cluster, Command, Result) ->
     case tt_feature_rollout:is_log_for_eredis_cluster_rolledout() of

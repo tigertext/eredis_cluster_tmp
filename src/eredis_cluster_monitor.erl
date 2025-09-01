@@ -16,6 +16,7 @@
 -export([get_pool_by_slot/1, get_pool_by_slot/2]).
 -export([get_all_pools/0, get_all_pools/1]).
 -export([get_cluster_slots/1, get_cluster_nodes/1]).
+-export([get_replica_pool_by_slot/2]).
 
 %% Public API (backward compat).
 -export([get_cluster_slots/0, get_cluster_nodes/0]).
@@ -354,16 +355,23 @@ parse_cluster_slots(ClusterInfo, Options) ->
     [SlotsMap#slots_map{node=SlotsMap#slots_map.node#node{options = Options}} ||
                        SlotsMap <- SlotsMaps].
 
-parse_cluster_slots([[StartSlot, EndSlot | [[Address, Port | _] | _]] | T], Index, Acc) ->
+parse_cluster_slots([[StartSlot, EndSlot | [MasterNode | ReplicaNodes]] | T], Index, Acc) ->
+    [Address, Port | _] = MasterNode,
+    MasterNodeRecord = #node{
+        address = binary_to_list(Address),
+        port = binary_to_integer(Port)
+    },
+    ReplicaNodeRecords = [#node{
+        address = binary_to_list(ReplicaAddr),
+        port = binary_to_integer(ReplicaPort)
+    } || [ReplicaAddr, ReplicaPort | _] <- ReplicaNodes],
     SlotsMap =
         #slots_map{
             index = Index,
             start_slot = binary_to_integer(StartSlot),
             end_slot = binary_to_integer(EndSlot),
-            node = #node{
-                address = binary_to_list(Address),
-                port = binary_to_integer(Port)
-            }
+            node = MasterNodeRecord,
+            replica_nodes = ReplicaNodeRecords
         },
     parse_cluster_slots(T, Index + 1, [SlotsMap | Acc]);
 parse_cluster_slots([], _Index, Acc) ->
@@ -411,7 +419,14 @@ close_connection(PoolSup, SlotsMap) ->
             end;
         true ->
             ok
-    end.
+    end,
+    [try eredis_cluster_pool:stop(PoolSup, ReplicaNode#node.pool) of
+         _ -> ok
+     catch
+         _ -> ok
+     end || ReplicaNode <- SlotsMap#slots_map.replica_nodes,
+            ReplicaNode =/= undefined,
+            ReplicaNode#node.pool =/= undefined].
 
 -spec connect_node(pid(), #node{}) -> #node{} | undefined.
 connect_node(PoolSup, Node) ->
@@ -442,9 +457,12 @@ create_slots_cache(SlotsTable, SlotsMaps) ->
 
 -spec connect_all_slots(pid(), [#slots_map{}]) -> [#slots_map{}].
 connect_all_slots(PoolSup, SlotsMapList) ->
-    [SlotsMap#slots_map{node = connect_node(PoolSup,
-                                            SlotsMap#slots_map.node)} ||
-        SlotsMap <- SlotsMapList].
+    [SlotsMap#slots_map{
+        node = connect_node(PoolSup, SlotsMap#slots_map.node),
+        replica_nodes = [connect_node(PoolSup, ReplicaNode) ||
+                        ReplicaNode <- SlotsMap#slots_map.replica_nodes,
+                        ReplicaNode =/= undefined]
+    } || SlotsMap <- SlotsMapList].
 
 -spec connect_([{Address :: string(), Port :: integer()}],
                Options :: options(), State :: #state{}) -> #state{}.
@@ -535,3 +553,37 @@ terminate(_Reason, _State) ->
 %% @private
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+%% =============================================================================
+%% @doc Get replica pool by slot for read operations
+%% @end
+%% =============================================================================
+-spec get_replica_pool_by_slot(Slot :: integer(), State :: #state{}) ->
+    {PoolName :: atom() | undefined, Version :: integer()}.
+get_replica_pool_by_slot(Slot, State) ->
+    EnableReplicas = application:get_env(eredis_cluster, enable_read_replicas, ?DEFAULT_ENABLE_READ_REPLICAS),
+    case EnableReplicas of
+        false ->
+            get_pool_by_slot(Slot, State);
+        true ->
+            try
+                [{_, Index}] = ets:lookup(State#state.slots_table, Slot),
+                SlotsMap = element(Index, State#state.slots_maps),
+                case SlotsMap#slots_map.replica_nodes of
+                    [] ->
+                        get_pool_by_slot(Slot, State);
+                    ReplicaNodes ->
+                        ReplicaIndex = (Slot rem length(ReplicaNodes)) + 1,
+                        ReplicaNode = lists:nth(ReplicaIndex, ReplicaNodes),
+                        case ReplicaNode of
+                            #node{pool = Pool} when Pool =/= undefined ->
+                                {Pool, State#state.version};
+                            _ ->
+                                get_pool_by_slot(Slot, State)
+                        end
+                end
+            catch
+                _:_ ->
+                    get_pool_by_slot(Slot, State)
+            end
+    end.
