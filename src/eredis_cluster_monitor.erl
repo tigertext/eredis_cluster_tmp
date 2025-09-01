@@ -461,7 +461,9 @@ connect_all_slots(PoolSup, SlotsMapList) ->
         node = connect_node(PoolSup, SlotsMap#slots_map.node),
         replica_nodes = [connect_node(PoolSup, ReplicaNode) ||
                         ReplicaNode <- SlotsMap#slots_map.replica_nodes,
-                        ReplicaNode =/= undefined]
+                        ReplicaNode =/= undefined,
+                        ReplicaNode#node.address =/= undefined,
+                        ReplicaNode#node.port =/= undefined]
     } || SlotsMap <- SlotsMapList].
 
 -spec connect_([{Address :: string(), Port :: integer()}],
