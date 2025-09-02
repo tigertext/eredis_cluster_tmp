@@ -459,11 +459,13 @@ create_slots_cache(SlotsTable, SlotsMaps) ->
 connect_all_slots(PoolSup, SlotsMapList) ->
     [SlotsMap#slots_map{
         node = connect_node(PoolSup, SlotsMap#slots_map.node),
-        replica_nodes = [connect_node(PoolSup, ReplicaNode) ||
+        replica_nodes = [ConnectedNode ||
                         ReplicaNode <- SlotsMap#slots_map.replica_nodes,
                         ReplicaNode =/= undefined,
                         ReplicaNode#node.address =/= undefined,
-                        ReplicaNode#node.port =/= undefined]
+                        ReplicaNode#node.port =/= undefined,
+                        ConnectedNode <- [connect_node(PoolSup, ReplicaNode)],
+                        ConnectedNode =/= undefined]
     } || SlotsMap <- SlotsMapList].
 
 -spec connect_([{Address :: string(), Port :: integer()}],
