@@ -9,6 +9,10 @@
 test_basic_connection() ->
     io:format("=== Testing Basic MemoryDB Connection ===~n"),
     
+    %% Start required applications
+    io:format("Starting required applications...~n"),
+    start_applications(),
+    
     %% MemoryDB cluster endpoint
     ClusterHost = "clustercfg.xmpp-group-memorydb-env7.ekur4t.memorydb.us-east-1.amazonaws.com",
     ClusterPort = 6379,
@@ -64,6 +68,10 @@ test_replica_routing() ->
     io:format("=== Testing Replica Routing ===~n"),
     
     try
+        %% Start required applications
+        io:format("Starting required applications...~n"),
+        start_applications(),
+        
         %% Enable replica routing
         io:format("Enabling read replicas...~n"),
         application:set_env(eredis_cluster, enable_read_replicas, true),
@@ -114,6 +122,9 @@ debug_connection_state(ClusterName) ->
     io:format("=== Debugging Connection State for ~p ===~n", [ClusterName]),
     
     try
+        %% Start required applications
+        start_applications(),
+        
         %% Get cluster state
         State = eredis_cluster_monitor:get_state(ClusterName),
         io:format("Cluster state retrieved~n"),
@@ -167,3 +178,18 @@ debug_connection_state(ClusterName) ->
         ErrorType:Reason ->
             io:format("Error debugging connection state: ~p:~p~n", [ErrorType, Reason])
     end.
+
+%% Helper function to start required applications
+start_applications() ->
+    %% Start dependencies in order
+    Apps = [crypto, asn1, public_key, ssl, poolboy, lager, eredis, eredis_cluster],
+    lists:foreach(fun(App) ->
+        case application:start(App) of
+            ok -> 
+                io:format("Started ~p~n", [App]);
+            {error, {already_started, _}} -> 
+                io:format("~p already started~n", [App]);
+            {error, Reason} -> 
+                io:format("Failed to start ~p: ~p~n", [App, Reason])
+        end
+    end, Apps).
