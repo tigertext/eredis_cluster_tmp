@@ -34,8 +34,16 @@ create(PoolSup, Host, Port, Options) ->
                         {max_overflow, MaxOverflow}],
 
             ChildSpec = poolboy:child_spec(PoolName, PoolArgs, WorkerArgs),
-            {Result, _} = supervisor:start_child(PoolSup, ChildSpec),
-            {Result, PoolName};
+            case supervisor:start_child(PoolSup, ChildSpec) of
+                {ok, _Pid} -> {ok, PoolName};
+                {error, {already_started, _Pid}} -> {ok, PoolName};
+                {error, Reason} -> 
+                    lager:error("Failed to start pool ~p: ~p", [PoolName, Reason]),
+                    {error, Reason};
+                Other ->
+                    lager:error("Unexpected supervisor result for pool ~p: ~p", [PoolName, Other]),
+                    {error, Other}
+            end;
         _ ->
             {ok, PoolName}
     end.

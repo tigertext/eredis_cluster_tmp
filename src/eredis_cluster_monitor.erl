@@ -440,7 +440,13 @@ connect_node(PoolSup, Node) ->
                                     Node#node.options) of
         {ok, Pool} ->
             Node#node{pool=Pool};
-        _ ->
+        {error, Reason} ->
+            lager:error("Failed to create pool for ~s:~p - Reason: ~p", 
+                       [Node#node.address, Node#node.port, Reason]),
+            undefined;
+        Other ->
+            lager:error("Unexpected pool creation result for ~s:~p - Result: ~p", 
+                       [Node#node.address, Node#node.port, Other]),
             undefined
     end.
 
@@ -468,8 +474,10 @@ connect_all_slots(PoolSup, SlotsMapList) ->
                         ReplicaNode =/= undefined,
                         ReplicaNode#node.address =/= undefined,
                         ReplicaNode#node.port =/= undefined,
+                        ReplicaNode#node.options =/= undefined,
                         ConnectedNode <- [connect_node(PoolSup, ReplicaNode)],
-                        ConnectedNode =/= undefined]
+                        ConnectedNode =/= undefined,
+                        ConnectedNode#node.pool =/= undefined]
     } || SlotsMap <- SlotsMapList].
 
 -spec connect_([{Address :: string(), Port :: integer()}],
@@ -585,7 +593,13 @@ get_replica_pool_by_slot(Slot, State) ->
                         ReplicaNode = lists:nth(ReplicaIndex, ReplicaNodes),
                         case ReplicaNode of
                             #node{pool = Pool} when Pool =/= undefined ->
-                                {Pool, State#state.version};
+                                case whereis(Pool) of
+                                    Pid when is_pid(Pid) ->
+                                        {Pool, State#state.version};
+                                    _ ->
+                                        lager:warning("Replica pool ~p not found, falling back to master", [Pool]),
+                                        get_pool_by_slot(Slot, State)
+                                end;
                             _ ->
                                 get_pool_by_slot(Slot, State)
                         end
