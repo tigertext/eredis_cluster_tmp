@@ -351,9 +351,12 @@ get_cluster_slots_from_single_node(Node) ->
                           Options::options()) -> [#slots_map{}].
 parse_cluster_slots(ClusterInfo, Options) ->
     SlotsMaps = parse_cluster_slots(ClusterInfo, 1, []),
-    %% Save current options in each new SlotsMaps
-    [SlotsMap#slots_map{node=SlotsMap#slots_map.node#node{options = Options}} ||
-                       SlotsMap <- SlotsMaps].
+    %% Save current options in each new SlotsMaps (both master and replica nodes)
+    [SlotsMap#slots_map{
+        node = SlotsMap#slots_map.node#node{options = Options},
+        replica_nodes = [ReplicaNode#node{options = Options} || 
+                        ReplicaNode <- SlotsMap#slots_map.replica_nodes]
+    } || SlotsMap <- SlotsMaps].
 
 parse_cluster_slots([[StartSlot, EndSlot | [MasterNode | ReplicaNodes]] | T], Index, Acc) ->
     [Address, Port | _] = MasterNode,
@@ -363,7 +366,8 @@ parse_cluster_slots([[StartSlot, EndSlot | [MasterNode | ReplicaNodes]] | T], In
     },
     ReplicaNodeRecords = [#node{
         address = binary_to_list(ReplicaAddr),
-        port = binary_to_integer(ReplicaPort)
+        port = binary_to_integer(ReplicaPort),
+        options = undefined
     } || [ReplicaAddr, ReplicaPort | _] <- ReplicaNodes],
     SlotsMap =
         #slots_map{
