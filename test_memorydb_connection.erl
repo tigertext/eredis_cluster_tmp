@@ -51,13 +51,13 @@ test_basic_connection() ->
                 eredis_cluster:q(["DEL", "test_key"]),
                 
                 io:format("~n✓ Basic connection test completed successfully~n");
-            Error ->
-                io:format("✗ Connection failed: ~p~n", [Error])
+            ConnectError ->
+                io:format("✗ Connection failed: ~p~n", [ConnectError])
         end
         
     catch
-        Error:Reason ->
-            io:format("✗ Exception during connection test: ~p:~p~n", [Error, Reason])
+        ErrorType:Reason ->
+            io:format("✗ Exception during connection test: ~p:~p~n", [ErrorType, Reason])
     end.
 
 test_replica_routing() ->
@@ -102,6 +102,11 @@ test_replica_routing() ->
             io:format("~n✗ Replica routing failed with no_connection error~n");
         Other ->
             io:format("~n? Unexpected result: ~p~n", [Other])
+    end
+    
+    catch
+        ErrorType:Reason ->
+            io:format("Error testing replica routing: ~p:~p~n", [ErrorType, Reason])
     end.
 
 debug_connection_state(ClusterName) ->
@@ -158,6 +163,6 @@ debug_connection_state(ClusterName) ->
         end, lists:zip(lists:seq(1, length(SlotsMaps)), SlotsMaps))
         
     catch
-        Error:Reason ->
-            io:format("Error debugging connection state: ~p:~p~n", [Error, Reason])
+        ErrorType:Reason ->
+            io:format("Error debugging connection state: ~p:~p~n", [ErrorType, Reason])
     end.
