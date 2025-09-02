@@ -38,9 +38,11 @@ create(PoolSup, Host, Port, Options) ->
                 {ok, _Pid} -> {ok, PoolName};
                 {error, {already_started, _Pid}} -> {ok, PoolName};
                 {error, Reason} -> 
+                    io:format("REPLICA_DEBUG: Failed to start pool ~p: ~p~n", [PoolName, Reason]),
                     lager:error("Failed to start pool ~p: ~p", [PoolName, Reason]),
                     {error, Reason};
                 Other ->
+                    io:format("REPLICA_DEBUG: Unexpected supervisor result for pool ~p: ~p~n", [PoolName, Other]),
                     lager:error("Unexpected supervisor result for pool ~p: ~p", [PoolName, Other]),
                     {error, Other}
             end;

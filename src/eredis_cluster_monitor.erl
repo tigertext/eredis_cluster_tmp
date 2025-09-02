@@ -434,17 +434,23 @@ close_connection(PoolSup, SlotsMap) ->
 
 -spec connect_node(pid(), #node{}) -> #node{} | undefined.
 connect_node(PoolSup, Node) ->
+    io:format("REPLICA_DEBUG: Attempting to connect node ~s:~p~n", [Node#node.address, Node#node.port]),
     case eredis_cluster_pool:create(PoolSup,
                                     Node#node.address,
                                     Node#node.port,
                                     Node#node.options) of
         {ok, Pool} ->
+            io:format("REPLICA_DEBUG: Successfully created pool ~p for ~s:~p~n", [Pool, Node#node.address, Node#node.port]),
             Node#node{pool=Pool};
         {error, Reason} ->
+            io:format("REPLICA_DEBUG: Failed to create pool for ~s:~p - Reason: ~p~n", 
+                     [Node#node.address, Node#node.port, Reason]),
             lager:error("Failed to create pool for ~s:~p - Reason: ~p", 
                        [Node#node.address, Node#node.port, Reason]),
             undefined;
         Other ->
+            io:format("REPLICA_DEBUG: Unexpected pool creation result for ~s:~p - Result: ~p~n", 
+                     [Node#node.address, Node#node.port, Other]),
             lager:error("Unexpected pool creation result for ~s:~p - Result: ~p", 
                        [Node#node.address, Node#node.port, Other]),
             undefined
