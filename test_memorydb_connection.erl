@@ -63,47 +63,48 @@ test_basic_connection() ->
 test_replica_routing() ->
     io:format("=== Testing Replica Routing ===~n"),
     
-    %% Enable replica routing
-    io:format("Enabling read replicas...~n"),
-    application:set_env(eredis_cluster, enable_read_replicas, true),
-    
-    EnabledStatus = application:get_env(eredis_cluster, enable_read_replicas, false),
-    io:format("Read replicas enabled: ~p~n", [EnabledStatus]),
-    
-    %% Test operations with replica routing
-    TestKey = "replica_test_key",
-    TestValue = "replica_test_value",
-    
-    io:format("~nTesting SET (should go to master)...~n"),
-    SetResult = eredis_cluster:q(["SET", TestKey, TestValue]),
-    io:format("SET result: ~p~n", [SetResult]),
-    
-    io:format("~nTesting GET (should try replica)...~n"),
-    GetResult = eredis_cluster:q(["GET", TestKey]),
-    io:format("GET result: ~p~n", [GetResult]),
-    
-    %% Test multiple read operations
-    io:format("~nTesting multiple GET operations...~n"),
-    lists:foreach(fun(N) ->
-        Key = "test_key_" ++ integer_to_list(N),
-        eredis_cluster:q(["SET", Key, "value_" ++ integer_to_list(N)]),
-        Result = eredis_cluster:q(["GET", Key]),
-        io:format("GET ~s: ~p~n", [Key, Result]),
-        eredis_cluster:q(["DEL", Key])
-    end, lists:seq(1, 5)),
-    
-    %% Clean up
-    eredis_cluster:q(["DEL", TestKey]),
-    
-    case GetResult of
-        {ok, _} ->
-            io:format("~n✓ Replica routing appears to be working~n");
-        {error, no_connection} ->
-            io:format("~n✗ Replica routing failed with no_connection error~n");
-        Other ->
-            io:format("~n? Unexpected result: ~p~n", [Other])
-    end
-    
+    try
+        %% Enable replica routing
+        io:format("Enabling read replicas...~n"),
+        application:set_env(eredis_cluster, enable_read_replicas, true),
+        
+        EnabledStatus = application:get_env(eredis_cluster, enable_read_replicas, false),
+        io:format("Read replicas enabled: ~p~n", [EnabledStatus]),
+        
+        %% Test operations with replica routing
+        TestKey = "replica_test_key",
+        TestValue = "replica_test_value",
+        
+        io:format("~nTesting SET (should go to master)...~n"),
+        SetResult = eredis_cluster:q(["SET", TestKey, TestValue]),
+        io:format("SET result: ~p~n", [SetResult]),
+        
+        io:format("~nTesting GET (should try replica)...~n"),
+        GetResult = eredis_cluster:q(["GET", TestKey]),
+        io:format("GET result: ~p~n", [GetResult]),
+        
+        %% Test multiple read operations
+        io:format("~nTesting multiple GET operations...~n"),
+        lists:foreach(fun(N) ->
+            Key = "test_key_" ++ integer_to_list(N),
+            eredis_cluster:q(["SET", Key, "value_" ++ integer_to_list(N)]),
+            Result = eredis_cluster:q(["GET", Key]),
+            io:format("GET ~s: ~p~n", [Key, Result]),
+            eredis_cluster:q(["DEL", Key])
+        end, lists:seq(1, 5)),
+        
+        %% Clean up
+        eredis_cluster:q(["DEL", TestKey]),
+        
+        case GetResult of
+            {ok, _} ->
+                io:format("~n✓ Replica routing appears to be working~n");
+            {error, no_connection} ->
+                io:format("~n✗ Replica routing failed with no_connection error~n");
+            Other ->
+                io:format("~n? Unexpected result: ~p~n", [Other])
+        end
+        
     catch
         ErrorType:Reason ->
             io:format("Error testing replica routing: ~p:~p~n", [ErrorType, Reason])
