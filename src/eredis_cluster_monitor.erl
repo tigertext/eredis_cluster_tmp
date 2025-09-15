@@ -16,6 +16,7 @@
 -export([get_pool_by_slot/1, get_pool_by_slot/2]).
 -export([get_all_pools/0, get_all_pools/1]).
 -export([get_cluster_slots/1, get_cluster_nodes/1]).
+-export([get_replicas_for_slot/1, get_replicas_for_slot/2]).
 
 %% Public API (backward compat).
 -export([get_cluster_slots/0, get_cluster_nodes/0]).
@@ -30,15 +31,6 @@
 
 %% Type definition.
 -include("eredis_cluster.hrl").
-
--record(state, {
-    init_nodes   = [] :: [#node{}],
-    slots_maps   = {} :: tuple(), %% whose elements are #slots_map{}
-    node_options = [] :: options(),
-    version      = 0  :: integer(),
-    slots_table       :: ets:tid() | undefined,
-    pool_sup          :: pid() | undefined
-}).
 
 -define(cluster_state_table(Cluster), Cluster).
 -define(cluster_process(Cluster), Cluster).
@@ -79,19 +71,29 @@ get_state(Cluster) ->
 get_state_version(State) ->
     State#state.version.
 
-%% @private
+%% @doc Returns the connection pools for all Redis nodes in the default cluster.
+%%
+%% This is useful for commands to a specific node using `qn/2' and
+%% `transaction/2'.
+%% @see qn/2
+%% @see transaction/2
+%% @end
+%% =============================================================================
 -spec get_all_pools() -> [atom()].
 get_all_pools() ->
     get_all_pools(?default_cluster).
 
-%% @private
--spec get_all_pools(atom() | #state{}) -> [atom()].
-get_all_pools(Cluster) when is_atom(Cluster) ->
-    get_all_pools(get_state(Cluster));
-get_all_pools(#state{slots_maps = SlotsMaps}) ->
-    SlotsMapList = tuple_to_list(SlotsMaps),
-    lists:usort([SlotsMap#slots_map.node#node.pool || SlotsMap <- SlotsMapList,
-                    SlotsMap#slots_map.node =/= undefined]).
+%% @doc Returns the connection pools for all Redis nodes in a named cluster.
+-spec get_all_pools(Cluster :: atom()) -> [atom()].
+get_all_pools(Cluster) ->
+    State = get_state(Cluster),
+    SlotsMaps = tuple_to_list(State#state.slots_maps),
+    %% Get all unique pools from both master and replica nodes
+    lists:usort([Node#node.pool || 
+                    SlotsMap <- SlotsMaps,
+                    Node <- [SlotsMap#slots_map.node],
+                    Node =/= undefined,
+                    Node#node.pool =/= undefined]).
 
 %% =============================================================================
 %% @private
@@ -258,8 +260,16 @@ get_cluster_info_from_existing_pools(SlotMaps, Options, Query, FailFn, SlotMapIt
     case next_node_in_slots_maps(SlotMaps, Options, SlotMapIterator) of
         {ok, Node, NewSlotMapIterator} ->
             Transaction = fun(Connection) ->
-                                  get_cluster_info_from_connection(Connection, Query, FailFn, Node)
-                          end,
+                try get_cluster_info_from_connection(Connection) of
+                    {ok, Result} ->
+                        {ok, Result};
+                    Error ->
+                        {error, Error}
+                catch
+                    _:CatchError ->
+                        {error, CatchError}
+                end
+            end,
             try
                 {ok, _Result} = poolboy:transaction(Node#node.pool, Transaction)
             catch
@@ -306,38 +316,63 @@ get_cluster_info_from_init_nodes([], _Options, _Query, _FailFn, ErrorList) ->
 get_cluster_info_from_init_nodes([Node|Nodes], Options, Query, FailFn, ErrorList) ->
     case safe_eredis_start_link(Node#node.address, Node#node.port, Options) of
         {ok, Connection} ->
-            try get_cluster_info_from_connection(Connection, Query, FailFn, Node) of
+            try get_cluster_info_from_connection(Connection) of
                 {ok, Result} ->
                     Result;
-                Reason ->
+                QueryError ->
                     get_cluster_info_from_init_nodes(Nodes, Options, Query, FailFn,
-                                                     [{Node, Reason} | ErrorList])
+                                                     [{Node, QueryError} | ErrorList])
             after
                 eredis:stop(Connection)
             end;
-        Reason ->
+        ConnectError ->
             get_cluster_info_from_init_nodes(Nodes, Options, Query, FailFn,
-                                             [{Node, Reason} | ErrorList])
+                                             [{Node, ConnectError} | ErrorList])
     end.
 
--spec get_cluster_info_from_connection(Connection :: pid(),
-                                       Query      :: list(),
-                                       FailFn     :: fun((#node{}) -> list()),
-                                       Node       :: #node{}) ->
-          ClusterInfo :: redis_simple_result().
-get_cluster_info_from_connection(Connection, Query, FailFn, Node) ->
-    try eredis:q(Connection, Query) of
-        {ok, ClusterInfo} ->
-            {ok, ClusterInfo};
-        {error, <<"ERR unknown command 'CLUSTER'">>} ->
-            {ok, FailFn(Node)};
-        {error, <<"ERR This instance has cluster support disabled">>} ->
-            {ok, FailFn(Node)};
-        OtherError ->
-            OtherError
+-spec get_cluster_info_from_connection(connection()) -> cluster_info().
+get_cluster_info_from_connection(Connection) ->
+    lager:debug("Getting cluster info from connection"),
+    try
+        case eredis:q(Connection, ["CLUSTER", "NODES"]) of
+            {ok, ClusterNodes} ->
+                lager:debug("Got cluster nodes: ~p", [ClusterNodes]),
+                case eredis:q(Connection, ["CLUSTER", "SLOTS"]) of
+                    {ok, ClusterSlots} ->
+                        lager:debug("Got cluster slots: ~p", [ClusterSlots]),
+                        eredis:stop(Connection),
+                        #cluster_info{
+                            nodes = parse_cluster_nodes(ClusterNodes),
+                            slots = parse_cluster_slots(ClusterSlots, [])
+                        };
+                    {error, SlotsError} ->
+                        lager:error("Failed to get cluster slots: ~p", [SlotsError]),
+                        eredis:stop(Connection),
+                        throw({error, SlotsError});
+                    Other ->
+                        lager:error("Unexpected response from CLUSTER SLOTS: ~p", [Other]),
+                        eredis:stop(Connection),
+                        throw({error, unexpected_response})
+                end;
+            {error, NodesError} ->
+                lager:error("Failed to get cluster nodes: ~p", [NodesError]),
+                eredis:stop(Connection),
+                throw({error, NodesError});
+            Other ->
+                lager:error("Unexpected response from CLUSTER NODES: ~p", [Other]),
+                eredis:stop(Connection),
+                throw({error, unexpected_response})
+        end
     catch
-        exit:{timeout, {gen_server, call, _}} ->
-            {error, timeout}
+        error:Error ->
+            eredis:stop(Connection),
+            throw({error, Error});
+        exit:Exit ->
+            eredis:stop(Connection),
+            throw({error, Exit});
+        throw:Throw ->
+            eredis:stop(Connection),
+            throw(Throw)
     end.
 
 -spec get_cluster_slots_from_single_node(#node{}) ->
@@ -354,18 +389,42 @@ parse_cluster_slots(ClusterInfo, Options) ->
     [SlotsMap#slots_map{node=SlotsMap#slots_map.node#node{options = Options}} ||
                        SlotsMap <- SlotsMaps].
 
-parse_cluster_slots([[StartSlot, EndSlot | [[Address, Port | _] | _]] | T], Index, Acc) ->
-    SlotsMap =
-        #slots_map{
-            index = Index,
-            start_slot = binary_to_integer(StartSlot),
-            end_slot = binary_to_integer(EndSlot),
-            node = #node{
-                address = binary_to_list(Address),
-                port = binary_to_integer(Port)
-            }
-        },
-    parse_cluster_slots(T, Index + 1, [SlotsMap | Acc]);
+parse_cluster_slots([[StartSlot, EndSlot | [[Address, Port | _] | Replicas]] | T], Index, Acc) ->
+    %% Create master node
+    MasterNode = #node{
+        address = binary_to_list(Address),
+        port = binary_to_integer(Port),
+        role = master
+    },
+    MasterSlotsMap = #slots_map{
+        index = Index,
+        start_slot = binary_to_integer(StartSlot),
+        end_slot = binary_to_integer(EndSlot),
+        node = MasterNode
+    },
+    
+    %% Create replica nodes if any exist
+    ReplicaSlotsMaps = case Replicas of
+        [] -> [];
+        _ -> lists:map(
+            fun({[RAddress, RPort | _], RIndex}) ->
+                ReplicaNode = #node{
+                    address = binary_to_list(RAddress),
+                    port = binary_to_integer(RPort),
+                    role = replica
+                },
+                #slots_map{
+                    index = RIndex,
+                    start_slot = binary_to_integer(StartSlot),
+                    end_slot = binary_to_integer(EndSlot),
+                    node = ReplicaNode
+                }
+            end,
+            lists:zip(Replicas, lists:seq(Index + 1, Index + length(Replicas)))
+        )
+    end,
+    
+    parse_cluster_slots(T, Index + length(Replicas) + 1, [MasterSlotsMap | ReplicaSlotsMaps] ++ Acc);
 parse_cluster_slots([], _Index, Acc) ->
     lists:reverse(Acc).
 
@@ -446,37 +505,76 @@ connect_all_slots(PoolSup, SlotsMapList) ->
                                             SlotsMap#slots_map.node)} ||
         SlotsMap <- SlotsMapList].
 
--spec connect_([{Address :: string(), Port :: integer()}],
-               Options :: options(), State :: #state{}) -> #state{}.
-connect_([], _Options, State) ->
-    State;
+-spec connect_(InitNodes :: [{Address :: string(), Port :: integer()}],
+                 Options :: options(), State :: #state{}) -> #state{}.
 connect_(InitNodes, Options, State) ->
-    NewState = State#state{
-        init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes],
-        node_options = Options
-    },
+    lager:debug("Attempting to connect to Redis cluster with nodes: ~p and options: ~p", [InitNodes, Options]),
+    case InitNodes of
+        [] ->
+            lager:error("No init nodes provided"),
+            throw({reply, {error, {cannot_connect_to_cluster, no_init_nodes}}, State});
+        _ ->
+            case get_cluster_info_from_init_nodes(InitNodes, Options) of
+                {ok, ClusterInfo} ->
+                    lager:debug("Successfully got cluster info: ~p", [ClusterInfo]),
+                    NewState = State#state{
+                        cluster_info = ClusterInfo,
+                        options = Options,
+                        node_options = Options,
+                        init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes]
+                    },
+                    reload_slots_map(NewState);
+                {error, Reason} ->
+                    lager:error("Failed to get cluster info: ~p", [Reason]),
+                    throw({reply, {error, {cannot_connect_to_cluster, Reason}}, State})
+            end
+    end.
 
-    reload_slots_map(NewState).
+-spec get_cluster_info_from_init_nodes([{string(), integer()}], options()) ->
+    {ok, cluster_info()} | {error, term()}.
+get_cluster_info_from_init_nodes(InitNodes, Options) ->
+    lager:debug("Attempting to connect to init nodes: ~p with options: ~p", [InitNodes, Options]),
+    case connect_to_init_nodes(InitNodes, Options) of
+        {ok, Connection} ->
+            try
+                lager:debug("Successfully connected to init node, getting cluster info"),
+                ClusterInfo = get_cluster_info_from_connection(Connection),
+                {ok, ClusterInfo}
+            catch
+                _:Reason ->
+                    lager:error("Failed to get cluster info: ~p", [Reason]),
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            lager:error("Failed to connect to init nodes: ~p", [Reason]),
+            {error, Reason}
+    end.
 
--spec disconnect_(PoolNodes :: [atom()], State :: #state{}) -> #state{}.
-disconnect_([], State) ->
-    State;
-disconnect_(PoolNodes, State) ->
-    SlotsMaps = tuple_to_list(State#state.slots_maps),
-    PoolSup = State#state.pool_sup,
-    Cluster = this_cluster(),
-
-    NewSlotsMaps = close_connection_with_nodes(PoolSup, SlotsMaps, PoolNodes),
-    ConnectedSlotsMaps = connect_all_slots(PoolSup, NewSlotsMaps),
-    create_slots_cache(State#state.slots_table, ConnectedSlotsMaps),
-
-    NewState = State#state{
-                 slots_maps = list_to_tuple(ConnectedSlotsMaps),
-                 version = State#state.version + 1
-                },
-    true = ets:insert(?cluster_state_table(Cluster),
-                      [{cluster_state, NewState}]),
-    NewState.
+-spec connect_to_init_nodes([{string(), integer()}], options()) ->
+    {ok, connection()} | {error, term()}.
+connect_to_init_nodes([], _Options) ->
+    lager:error("No init nodes provided"),
+    {error, no_init_nodes};
+connect_to_init_nodes([{Address, Port} | Rest], Options) ->
+    lager:debug("Attempting to connect to node ~p:~p with options: ~p", [Address, Port, Options]),
+    try eredis:start_link(Address, Port, Options) of
+        {ok, Connection} ->
+            lager:debug("Successfully connected to node ~p:~p", [Address, Port]),
+            {ok, Connection};
+        {error, Reason} ->
+            lager:error("Failed to connect to node ~p:~p: ~p", [Address, Port, Reason]),
+            connect_to_init_nodes(Rest, Options)
+    catch
+        error:Reason ->
+            lager:error("Error connecting to node ~p:~p: ~p", [Address, Port, Reason]),
+            connect_to_init_nodes(Rest, Options);
+        exit:Reason ->
+            lager:error("Exit while connecting to node ~p:~p: ~p", [Address, Port, Reason]),
+            connect_to_init_nodes(Rest, Options);
+        throw:Reason ->
+            lager:error("Throw while connecting to node ~p:~p: ~p", [Address, Port, Reason]),
+            connect_to_init_nodes(Rest, Options)
+    end.
 
 %% Returns the name of the cluster handled by the current monitor process
 this_cluster() ->
@@ -500,7 +598,15 @@ handle_call({reload_slots_map, _}, _From, State) ->
     %% Mismatching version. Slots map already reloaded.
     {reply, ok, State};
 handle_call({connect, InitServers, Options}, _From, State) ->
-    {reply, ok, connect_(InitServers, Options, State)};
+    try connect_(InitServers, Options, State) of
+        NewState ->
+            {reply, ok, NewState}
+    catch
+        {reply, {error, Reason}, _} ->
+            {reply, {error, Reason}, State};
+        _:Reason ->
+            {reply, {error, Reason}, State}
+    end;
 handle_call({disconnect, PoolNodes}, _From, State) ->
     {reply, ok, disconnect_(PoolNodes, State)};
 handle_call(_Request, _From, State) ->
@@ -517,8 +623,17 @@ handle_cast({async_init, Cluster}, State) ->
                         []
                 end,
 
-    %% application env options are read later in callstack
-    {noreply, connect_(InitNodes, [], State#state{pool_sup = PoolSup})};
+    try connect_(InitNodes, [], State#state{pool_sup = PoolSup}) of
+        NewState ->
+            {noreply, NewState}
+    catch
+        {reply, {error, Reason}, _} ->
+            lager:error("Failed to connect during async init: ~p", [Reason]),
+            {noreply, State#state{pool_sup = PoolSup}};
+        _:Reason ->
+            lager:error("Unexpected error during async init: ~p", [Reason]),
+            {noreply, State#state{pool_sup = PoolSup}}
+    end;
 handle_cast({reload_slots_map, Version}, #state{version = Version} = State) ->
     {noreply, reload_slots_map(State)};
 handle_cast({reload_slots_map, _OldVersion}, State) ->
@@ -535,3 +650,96 @@ terminate(_Reason, _State) ->
 %% @private
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+%% @doc Get all replica nodes for a given slot
+-spec get_replicas_for_slot(Slot :: integer()) -> [PoolName :: atom()].
+get_replicas_for_slot(Slot) ->
+    State = get_state(?default_cluster),
+    get_replicas_for_slot(Slot, State).
+
+-spec get_replicas_for_slot(Slot :: integer(), State :: term()) -> [PoolName :: atom()].
+get_replicas_for_slot(Slot, State) ->
+    try
+        [{_, Index}] = ets:lookup(State#state.slots_table, Slot),
+        SlotsMap = element(Index, State#state.slots_maps),
+        if
+            SlotsMap#slots_map.node =/= undefined ->
+                MasterNode = SlotsMap#slots_map.node,
+                %% Find all replica nodes for this master
+                lists:filtermap(
+                    fun(#slots_map{node = Node}) ->
+                        case Node#node.role of
+                            replica when Node#node.address =/= MasterNode#node.address ->
+                                {true, Node#node.pool};
+                            _ ->
+                                false
+                        end
+                    end,
+                    tuple_to_list(State#state.slots_maps)
+                );
+            true ->
+                []
+        end
+    catch
+        _:_ ->
+            []
+    end.
+
+%% @doc Parse node role from cluster nodes output
+-spec parse_node_role(Flags :: binary()) -> master | replica.
+parse_node_role(Flags) ->
+    case binary:split(Flags, <<",">>, [global]) of
+        [<<"master">> | _] -> master;
+        [<<"myself">>, <<"master">> | _] -> master;
+        [<<"slave">> | _] -> replica;
+        _ -> master  % Default to master if role is unclear
+    end.
+
+%% @doc Update node role in slots map
+-spec update_node_role(SlotsMap :: #slots_map{}, Role :: binary()) -> #slots_map{}.
+update_node_role(SlotsMap, Role) ->
+    Node = SlotsMap#slots_map.node,
+    SlotsMap#slots_map{node = Node#node{role = parse_node_role(Role)}}.
+
+%% @doc Parse cluster nodes output
+-spec parse_cluster_nodes(Nodes :: binary()) -> [#node{}].
+parse_cluster_nodes(Nodes) ->
+    NodeLines = binary:split(Nodes, <<"\n">>, [global]),
+    lists:filtermap(
+        fun(Line) ->
+            case binary:split(Line, <<" ">>, [global]) of
+                [NodeId, IpPort, Flags, _MasterId | _] ->
+                    [Ip, _Port] = binary:split(IpPort, <<":">>),
+                    Node = #node{
+                        address = binary_to_list(Ip),
+                        port = 6379,  % Default port since it's not in the address
+                        role = parse_node_role(Flags),
+                        pool = list_to_atom("eredis_cluster_pool_" ++ binary_to_list(NodeId))
+                    },
+                    {true, Node};
+                _ ->
+                    false
+            end
+        end,
+        NodeLines
+    ).
+
+-spec disconnect_(PoolNodes :: [atom()], State :: #state{}) -> #state{}.
+disconnect_([], State) ->
+    State;
+disconnect_(PoolNodes, State) ->
+    SlotsMaps = tuple_to_list(State#state.slots_maps),
+    PoolSup = State#state.pool_sup,
+    Cluster = this_cluster(),
+
+    NewSlotsMaps = close_connection_with_nodes(PoolSup, SlotsMaps, PoolNodes),
+    ConnectedSlotsMaps = connect_all_slots(PoolSup, NewSlotsMaps),
+    create_slots_cache(State#state.slots_table, ConnectedSlotsMaps),
+
+    NewState = State#state{
+                 slots_maps = list_to_tuple(ConnectedSlotsMaps),
+                 version = State#state.version + 1
+                },
+    true = ets:insert(?cluster_state_table(Cluster),
+                      [{cluster_state, NewState}]),
+    NewState.
