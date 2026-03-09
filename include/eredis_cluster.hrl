@@ -37,7 +37,8 @@
     start_slot :: integer(),
     end_slot :: integer(),
     index :: integer(),
-    node :: #node{}
+    node :: #node{},
+    replica_nodes = [] :: [#node{}]
 }).
 
 -define(default_cluster, eredis_cluster_default).
@@ -45,6 +46,7 @@
 -define(optimistic_locking_transaction_max_retries, 16).
 -define(REDIS_CLUSTER_HASH_SLOTS, 16384).
 -define(REDIS_RETRY_DELAY, 100).
+-define(DEFAULT_ENABLE_READ_REPLICAS, false).
 
 %% Unused; kept for BW compatibility (in case anyone is using these macros)
 -define(OL_TRANSACTION_TTL, ?optimistic_locking_transaction_max_retries).

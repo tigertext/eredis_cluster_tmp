@@ -14,6 +14,7 @@
 -export([refresh_mapping/2, async_refresh_mapping/2]).
 -export([get_state/1, get_state_version/1]).
 -export([get_pool_by_slot/1, get_pool_by_slot/2]).
+-export([get_replica_pool_by_slot/2]).
 -export([get_all_pools/0, get_all_pools/1]).
 -export([get_cluster_slots/1, get_cluster_nodes/1]).
 
@@ -120,6 +121,41 @@ get_pool_by_slot(Slot, State) ->
     catch
         _:_ ->
             {undefined, State#state.version}
+    end.
+
+%% @private
+-spec get_replica_pool_by_slot(Slot :: integer(), State :: #state{}) ->
+    {PoolName :: atom() | undefined, Version :: integer()}.
+get_replica_pool_by_slot(Slot, State) ->
+    EnableReplicas = application:get_env(eredis_cluster,
+                         enable_read_replicas,
+                         ?DEFAULT_ENABLE_READ_REPLICAS),
+    case EnableReplicas of
+        false ->
+            get_pool_by_slot(Slot, State);
+        true ->
+            try
+                [{_, Index}] = ets:lookup(State#state.slots_table, Slot),
+                SlotsMap = element(Index, State#state.slots_maps),
+                case SlotsMap#slots_map.replica_nodes of
+                    [] ->
+                        %% No replicas available, fall back to master
+                        get_pool_by_slot(Slot, State);
+                    ReplicaNodes ->
+                        %% Round-robin selection based on slot number
+                        RI = (Slot rem length(ReplicaNodes)) + 1,
+                        RN = lists:nth(RI, ReplicaNodes),
+                        case RN of
+                            #node{pool = Pool} when Pool =/= undefined ->
+                                {Pool, State#state.version};
+                            _ ->
+                                get_pool_by_slot(Slot, State)
+                        end
+                end
+            catch
+                _:_ ->
+                    get_pool_by_slot(Slot, State)
+            end
     end.
 
 %% =============================================================================
@@ -351,20 +387,30 @@ get_cluster_slots_from_single_node(Node) ->
 parse_cluster_slots(ClusterInfo, Options) ->
     SlotsMaps = parse_cluster_slots(ClusterInfo, 1, []),
     %% Save current options in each new SlotsMaps
-    [SlotsMap#slots_map{node=SlotsMap#slots_map.node#node{options = Options}} ||
-                       SlotsMap <- SlotsMaps].
+    %% Inject {readonly, true} into replica node options
+    [SlotsMap#slots_map{
+        node = SlotsMap#slots_map.node#node{options = Options},
+        replica_nodes = [RN#node{options = [{readonly, true} | Options]}
+                        || RN <- SlotsMap#slots_map.replica_nodes]
+    } || SlotsMap <- SlotsMaps].
 
-parse_cluster_slots([[StartSlot, EndSlot | [[Address, Port | _] | _]] | T], Index, Acc) ->
-    SlotsMap =
-        #slots_map{
-            index = Index,
-            start_slot = binary_to_integer(StartSlot),
-            end_slot = binary_to_integer(EndSlot),
-            node = #node{
-                address = binary_to_list(Address),
-                port = binary_to_integer(Port)
-            }
-        },
+parse_cluster_slots([[StartSlot, EndSlot | [MasterNode | ReplicaNodes]] | T], Index, Acc) ->
+    [Address, Port | _] = MasterNode,
+    MasterNodeRecord = #node{
+        address = binary_to_list(Address),
+        port = binary_to_integer(Port)
+    },
+    ReplicaNodeRecords = [#node{
+        address = binary_to_list(RA),
+        port = binary_to_integer(RP)
+    } || [RA, RP | _] <- ReplicaNodes],
+    SlotsMap = #slots_map{
+        index = Index,
+        start_slot = binary_to_integer(StartSlot),
+        end_slot = binary_to_integer(EndSlot),
+        node = MasterNodeRecord,
+        replica_nodes = ReplicaNodeRecords
+    },
     parse_cluster_slots(T, Index + 1, [SlotsMap | Acc]);
 parse_cluster_slots([], _Index, Acc) ->
     lists:reverse(Acc).
@@ -411,7 +457,15 @@ close_connection(PoolSup, SlotsMap) ->
             end;
         true ->
             ok
-    end.
+    end,
+    %% Close replica pools
+    [try eredis_cluster_pool:stop(PoolSup, RN#node.pool) of
+         _ -> ok
+     catch _:_ -> ok
+     end || RN <- SlotsMap#slots_map.replica_nodes,
+            RN =/= undefined,
+            RN#node.pool =/= undefined],
+    ok.
 
 -spec connect_node(pid(), #node{}) -> #node{} | undefined.
 connect_node(PoolSup, Node) ->
@@ -442,9 +496,14 @@ create_slots_cache(SlotsTable, SlotsMaps) ->
 
 -spec connect_all_slots(pid(), [#slots_map{}]) -> [#slots_map{}].
 connect_all_slots(PoolSup, SlotsMapList) ->
-    [SlotsMap#slots_map{node = connect_node(PoolSup,
-                                            SlotsMap#slots_map.node)} ||
-        SlotsMap <- SlotsMapList].
+    [SlotsMap#slots_map{
+        node = connect_node(PoolSup, SlotsMap#slots_map.node),
+        replica_nodes = [ConnectedNode ||
+            RN <- SlotsMap#slots_map.replica_nodes,
+            RN =/= undefined,
+            ConnectedNode <- [connect_node(PoolSup, RN)],
+            ConnectedNode =/= undefined]
+    } || SlotsMap <- SlotsMapList].
 
 -spec connect_([{Address :: string(), Port :: integer()}],
                Options :: options(), State :: #state{}) -> #state{}.
