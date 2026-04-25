@@ -127,9 +127,14 @@ get_pool_by_slot(Slot, State) ->
 -spec get_replica_pool_by_slot(Slot :: integer(), State :: #state{}) ->
     {PoolName :: atom() | undefined, Version :: integer()}.
 get_replica_pool_by_slot(Slot, State) ->
-    EnableReplicas = application:get_env(eredis_cluster,
-                         enable_read_replicas,
-                         ?DEFAULT_ENABLE_READ_REPLICAS),
+    %% Per-cluster opt-in: an `{enable_read_replicas, true}' entry passed via
+    %% the connect/3 Options list takes precedence over the OTP app env,
+    %% since get_current_options/1 merges node_options ahead of the env via
+    %% lists:ukeysort/2. Falls back to env, then to ?DEFAULT_ENABLE_READ_REPLICAS.
+    Options = get_current_options(State),
+    EnableReplicas = proplists:get_value(enable_read_replicas,
+                                         Options,
+                                         ?DEFAULT_ENABLE_READ_REPLICAS),
     case EnableReplicas of
         false ->
             get_pool_by_slot(Slot, State);
