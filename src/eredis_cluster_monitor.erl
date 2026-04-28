@@ -391,12 +391,25 @@ get_cluster_slots_from_single_node(Node) ->
                           Options::options()) -> [#slots_map{}].
 parse_cluster_slots(ClusterInfo, Options) ->
     SlotsMaps = parse_cluster_slots(ClusterInfo, 1, []),
+    %% Per-cluster gate: when enable_read_replicas is disabled for this
+    %% cluster (the default), drop replicas at parse time so no replica pools
+    %% are ever created and no connections are opened to replica nodes.
+    %% Without this gate the lib would still open replica connections on
+    %% every cluster, just not route reads to them.
+    EnableReplicas = proplists:get_value(enable_read_replicas,
+                                         Options,
+                                         ?DEFAULT_ENABLE_READ_REPLICAS),
     %% Save current options in each new SlotsMaps
     %% Inject {readonly, true} into replica node options
     [SlotsMap#slots_map{
         node = SlotsMap#slots_map.node#node{options = Options},
-        replica_nodes = [RN#node{options = [{readonly, true} | Options]}
-                        || RN <- SlotsMap#slots_map.replica_nodes]
+        replica_nodes = case EnableReplicas of
+                            true ->
+                                [RN#node{options = [{readonly, true} | Options]}
+                                 || RN <- SlotsMap#slots_map.replica_nodes];
+                            false ->
+                                []
+                        end
     } || SlotsMap <- SlotsMaps].
 
 parse_cluster_slots([[StartSlot, EndSlot | [MasterNode | ReplicaNodes]] | T], Index, Acc) ->
