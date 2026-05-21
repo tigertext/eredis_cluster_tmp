@@ -47,6 +47,7 @@
 -define(REDIS_CLUSTER_HASH_SLOTS, 16384).
 -define(REDIS_RETRY_DELAY, 100).
 -define(DEFAULT_ENABLE_READ_REPLICAS, false).
+-define(CONNECT_TIMEOUT_DEFAULT, 60_000).
 
 %% Unused; kept for BW compatibility (in case anyone is using these macros)
 -define(OL_TRANSACTION_TTL, ?optimistic_locking_transaction_max_retries).
