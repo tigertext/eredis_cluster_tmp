@@ -52,15 +52,7 @@ start_link(Cluster) ->
 
 %% @private
 connect(Cluster, InitServers, Options) ->
-    %% connect_timeout is a call-level option, not a per-connection option.
-    %% Extract it for use with gen_server:call/3 and strip from Options before
-    %% forwarding so it doesn't pollute eredis worker start_link options.
-    Timeout = proplists:get_value(connect_timeout, Options,
-                                  ?CONNECT_TIMEOUT_DEFAULT),
-    CleanOptions = proplists:delete(connect_timeout, Options),
-    gen_server:call(?cluster_process(Cluster),
-                    {connect, InitServers, CleanOptions},
-                    Timeout).
+    gen_server:call(?cluster_process(Cluster), {connect, InitServers, Options}).
 
 %% @private
 disconnect(Cluster, PoolNodes) ->
@@ -495,21 +487,15 @@ close_connection(PoolSup, SlotsMap) ->
 
 -spec connect_node(pid(), #node{}) -> #node{} | undefined.
 connect_node(PoolSup, Node) ->
-    T0 = erlang:monotonic_time(millisecond),
-    Result = case eredis_cluster_pool:create(PoolSup,
-                                             Node#node.address,
-                                             Node#node.port,
-                                             Node#node.options) of
-                 {ok, Pool} ->
-                     Node#node{pool=Pool};
-                 _ ->
-                     undefined
-             end,
-    T1 = erlang:monotonic_time(millisecond),
-    Readonly = proplists:get_value(readonly, Node#node.options, false),
-    lager:info("[eredis_cluster] node ~s:~p (readonly=~p) pool create took ~p ms",
-               [Node#node.address, Node#node.port, Readonly, T1 - T0]),
-    Result.
+    case eredis_cluster_pool:create(PoolSup,
+                                    Node#node.address,
+                                    Node#node.port,
+                                    Node#node.options) of
+        {ok, Pool} ->
+            Node#node{pool=Pool};
+        _ ->
+            undefined
+    end.
 
 safe_eredis_start_link(Address, Port, Options) ->
     process_flag(trap_exit, true),
@@ -528,29 +514,14 @@ create_slots_cache(SlotsTable, SlotsMaps) ->
 
 -spec connect_all_slots(pid(), [#slots_map{}]) -> [#slots_map{}].
 connect_all_slots(PoolSup, SlotsMapList) ->
-    Cluster = this_cluster(),
-    lists:map(
-      fun(SlotsMap) ->
-              T0 = erlang:monotonic_time(millisecond),
-              Connected = SlotsMap#slots_map{
-                  node = connect_node(PoolSup, SlotsMap#slots_map.node),
-                  replica_nodes = [ConnectedNode ||
-                      RN <- SlotsMap#slots_map.replica_nodes,
-                      RN =/= undefined,
-                      ConnectedNode <- [connect_node(PoolSup, RN)],
-                      ConnectedNode =/= undefined]
-              },
-              T1 = erlang:monotonic_time(millisecond),
-              lager:info("[eredis_cluster] cluster ~p shard ~p connected in ~p ms "
-                         "(slot_range=~p-~p, replicas=~p)",
-                         [Cluster,
-                          SlotsMap#slots_map.index,
-                          T1 - T0,
-                          SlotsMap#slots_map.start_slot,
-                          SlotsMap#slots_map.end_slot,
-                          length(Connected#slots_map.replica_nodes)]),
-              Connected
-      end, SlotsMapList).
+    [SlotsMap#slots_map{
+        node = connect_node(PoolSup, SlotsMap#slots_map.node),
+        replica_nodes = [ConnectedNode ||
+            RN <- SlotsMap#slots_map.replica_nodes,
+            RN =/= undefined,
+            ConnectedNode <- [connect_node(PoolSup, RN)],
+            ConnectedNode =/= undefined]
+    } || SlotsMap <- SlotsMapList].
 
 -spec connect_([{Address :: string(), Port :: integer()}],
                Options :: options(), State :: #state{}) -> #state{}.
@@ -561,13 +532,8 @@ connect_(InitNodes, Options, State) ->
         init_nodes = [#node{address = A, port = P} || {A, P} <- InitNodes],
         node_options = Options
     },
-    T0 = erlang:monotonic_time(millisecond),
-    Result = reload_slots_map(NewState),
-    T1 = erlang:monotonic_time(millisecond),
-    lager:info("[eredis_cluster] cluster ~p connect finished in ~p ms "
-               "(init_nodes=~p, options=~p)",
-               [this_cluster(), T1 - T0, length(InitNodes), Options]),
-    Result.
+
+    reload_slots_map(NewState).
 
 -spec disconnect_(PoolNodes :: [atom()], State :: #state{}) -> #state{}.
 disconnect_([], State) ->
