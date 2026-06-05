@@ -200,24 +200,19 @@ q1(Cluster, Command, 0) ->
     end,
     {error, no_connection};
 q1(Cluster, Command, Count) when Count > 0 ->
+    %% CP-648: do NOT call reconnect/1 from these exception handlers.
+    %% The {connect,...} handler in eredis_cluster_monitor is not idempotent
+    %% under concurrency, so N exhausted callers all serializing through it
+    %% triggers a thundering-herd reconnect storm (root cause of the
+    %% xmpp-roles-prod / xmpp-group-prod OOM on 2026-06-04). Recovery from
+    %% transient node failures already happens through the version-protected
+    %% refresh_mapping path inside query/4's handle_transaction_result.
     try
         query(Cluster, Command)
     catch
         exit:{noproc,_}:_Trace ->
-            try
-                reconnect(Cluster)
-            catch
-                _E:_R ->
-                    ok
-            end,
             q1(Cluster, Command, Count - 1);
         _Error:_Reason:_Trace ->
-            try
-                reconnect(Cluster)
-            catch
-                _E:_R ->
-                    ok
-            end,
             q1(Cluster, Command, Count - 1)
     end.
 
@@ -713,8 +708,14 @@ query_noreply(Cluster, Command, PoolKey) ->
     ok.
 
 query(Cluster, Command, _PoolKey, 0) ->
+    %% CP-648: removed the implicit reconnect(Cluster) call. See the q1/3
+    %% comment above and the 2026-06-04 incident: the unprotected
+    %% {connect,...} gen_server handler made concurrent reconnects from N
+    %% exhausted workers create new pools without bound, OOM'ing the task.
+    %% Match upstream Nordix/eredis_cluster 0.9.0 behavior here: report the
+    %% failure and return {error, no_connection}. Explicit recovery still
+    %% available via eredis_cluster:reconnect/1 from operational code.
     try
-        reconnect(Cluster),
         tt_prometheus:report_failed_write_for_resource_queue("write_failed_reach_max_times", Cluster)
     catch
         _E:_R ->
