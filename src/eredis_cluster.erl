@@ -732,6 +732,8 @@ query(Cluster, Command, PoolKey, Counter) ->
         false -> eredis_cluster_monitor:get_pool_by_slot(Slot, State)
     end,
     Result0 = eredis_cluster_pool:transaction(Pool, fun(W) -> qw(W, Command) end),
+    Cluster == memorydb_for_group_db andalso
+        lager:info("Command: ~p, Result: ~p", [Command, Result0]),
     Result = handle_redirects(Cluster, Command, Result0, Version),
     case handle_transaction_result(Result, Cluster, Version, Counter =:= 1) of
         retry  ->
