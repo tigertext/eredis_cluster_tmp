@@ -1,6 +1,11 @@
 Change log
 ==========
 
+X.X.X
+-----
+
+* Add PubSub functionality: publish/subscribe/psubscribe/unsubscribe/punsubscribe
+
 0.9.0
 -----
 
