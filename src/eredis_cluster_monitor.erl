@@ -18,6 +18,10 @@
 -export([get_all_pools/0, get_all_pools/1]).
 -export([get_cluster_slots/1, get_cluster_nodes/1]).
 
+-ifdef(TEST).
+-export([read_replicas_enabled/1]).
+-endif.
+
 %% Public API (backward compat).
 -export([get_cluster_slots/0, get_cluster_nodes/0]).
 
@@ -135,15 +139,7 @@ get_pool_by_slot(Slot, State) ->
 -spec get_replica_pool_by_slot(Slot :: integer(), State :: #state{}) ->
     {PoolName :: atom() | undefined, Version :: integer()}.
 get_replica_pool_by_slot(Slot, State) ->
-    %% Per-cluster opt-in: an `{enable_read_replicas, true}' entry passed via
-    %% the connect/3 Options list takes precedence over the OTP app env,
-    %% since get_current_options/1 merges node_options ahead of the env via
-    %% lists:ukeysort/2. Falls back to env, then to ?DEFAULT_ENABLE_READ_REPLICAS.
-    Options = get_current_options(State),
-    EnableReplicas = proplists:get_value(enable_read_replicas,
-                                         Options,
-                                         ?DEFAULT_ENABLE_READ_REPLICAS),
-    case EnableReplicas of
+    case read_replicas_enabled(State#state.node_options) of
         false ->
             get_pool_by_slot(Slot, State);
         true ->
@@ -449,6 +445,19 @@ parse_cluster_slots([], _Index, Acc) ->
 get_current_options(State) ->
     Env = application:get_all_env(eredis_cluster),
     lists:ukeysort(1, State#state.node_options ++ Env).
+
+%% Per-cluster opt-in: an `{enable_read_replicas, true}' entry passed via the
+%% connect/3 Options list takes precedence over the OTP app env, then
+%% ?DEFAULT_ENABLE_READ_REPLICAS. Called for every read command, so it looks up
+%% the one flag instead of calling get_current_options/1, whose
+%% application:get_all_env/1 costs about 42 us a call.
+-spec read_replicas_enabled(NodeOptions :: options()) -> boolean().
+read_replicas_enabled(NodeOptions) ->
+    case proplists:lookup(enable_read_replicas, NodeOptions) of
+        {enable_read_replicas, Value} -> Value;
+        none -> application:get_env(eredis_cluster, enable_read_replicas,
+                                    ?DEFAULT_ENABLE_READ_REPLICAS)
+    end.
 
 %%%------------------------------------------------------------
 -spec close_connection_with_nodes(PoolSup :: pid(),
