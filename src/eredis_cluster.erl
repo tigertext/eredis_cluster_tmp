@@ -641,11 +641,24 @@ split_by_pools([], _Index, CmdAcc, MapAcc, State) ->
 %% =============================================================================
 -spec is_read_command(Command :: redis_simple_command()) -> boolean().
 is_read_command([CommandName | _]) when is_binary(CommandName) ->
-    is_read_command_name(string:uppercase(binary_to_list(CommandName)));
+    is_read_command_string(binary_to_list(CommandName));
 is_read_command([CommandName | _]) when is_list(CommandName) ->
-    is_read_command_name(string:uppercase(CommandName));
+    is_read_command_string(CommandName);
 is_read_command(_) ->
     false.
+
+%% Runs for every command. Callers send verbs in upper case, so match the verb as
+%% given first; string:uppercase/1 (about 17 us a call) runs only for a verb that
+%% is not plain upper-case ASCII, which keeps the old case-insensitive result.
+-spec is_read_command_string(string() | [term()]) -> boolean().
+is_read_command_string(Name) ->
+    is_read_command_name(Name) orelse
+        (not is_upper_ascii(Name) andalso is_read_command_name(string:uppercase(Name))).
+
+-spec is_upper_ascii(term()) -> boolean().
+is_upper_ascii([]) -> true;
+is_upper_ascii([C | Rest]) when is_integer(C), C >= $A, C =< $Z -> is_upper_ascii(Rest);
+is_upper_ascii(_) -> false.
 
 -spec is_read_command_name(string()) -> boolean().
 is_read_command_name("GET")            -> true;
